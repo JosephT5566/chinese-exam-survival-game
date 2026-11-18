@@ -50,7 +50,7 @@ function landing() {
 function teacherView() {
   const user = runtime.auth.currentUser;
   if (!user || user.isAnonymous) return `<section class="panel waiting"><h1>老師登入</h1><p>使用已授權的 Google 帳號管理教室。</p>${button('login', '使用 Google 登入')}</section>`;
-  if (!authorized) return `<section class="panel"><h1>等待老師授權</h1><p>目前帳號：${escape(user.email ?? '')}</p><p>請將以下 UID 提供給管理員，加入白名單後按「重新檢查授權」。</p><p><code>${escape(user.uid)}</code></p><div class="actions">${button('reauthorize', '重新檢查授權')}${button('logout', '登出', 'secondary')}</div></section>`;
+  if (!authorized) return `<section class="panel"><h1>等待老師授權</h1><p>已使用 Google 帳號登入。</p><p>請將以下 email 提供給管理員，加入白名單後按「重新檢查授權」。</p><p><code>${escape(user.email ?? '')}</code></p><div class="actions">${button('reauthorize', '重新檢查授權')}${button('logout', '登出', 'secondary')}</div></section>`;
   return `<div class="section-head"><div><p class="eyebrow">${escape(user.email ?? '')}</p><h1>老師控制台</h1></div><div class="actions">${button('new', '建立教室')}${button('logout', '登出', 'secondary')}</div></div><section class="panel"><h2>我的教室</h2>${rooms.length ? `<ul class="rank-list">${rooms.map(r => `<li><span>${escape(r.code)} · ${labels[r.status]}</span><button type="button" class="secondary" data-room="${escape(r.id)}" ${busy ? 'disabled' : ''}>${room?.id === r.id ? '目前教室' : '開啟教室'}</button></li>`).join('')}</ul>` : '<p>尚無教室，請先建立。</p>'}</section>${room ? `<div class="dashboard"><section class="panel"><h2>房間 ${escape(room.code)}</h2><p class="tag">${labels[room.status]}</p><div class="stats"><div><small>已加入</small><strong>${roster.length} / 30</strong></div></div>${roster.length > 30 ? '<p class="error">已超過 30 人，公開排名只顯示前 30 人，請結束並另開教室分流。</p>' : ''}<div class="share-field"><label for="share">學生加入連結</label><input id="share" readonly value="${escape(url('student', room.code))}"></div><div class="actions">${room.status === 'lobby' || room.status === 'paused' ? button('running', room.status === 'lobby' ? '開始闖關' : '恢復作答') : ''}${room.status === 'running' ? button('paused', '暫停作答') : ''}${['lobby', 'running', 'paused'].includes(room.status) ? button('ended', '結束活動', 'secondary') : ''}${room.status === 'ended' ? button('archived', '封存教室', 'secondary') : ''}</div></section>${rankings()}</div><section class="panel"><h2>玩家進度</h2><ul class="rank-list">${roster.map(p => `<li><span>${escape(p.nickname)}</span><strong>${p.completedCount} / 40 題</strong><small>${p.totalScore} 分</small></li>`).join('')}</ul></section>` : ''}`;
 }
 function review(p: CloudPlayer) {
@@ -156,7 +156,7 @@ async function authorize() {
 const stopAuth = onAuthStateChanged(runtime.auth, user => {
   const generation = ++identityEpoch;
   stopRoom(); identityStops.forEach(stop => stop()); identityStops = [];
-  classroom = user ? new Classroom(runtime.db, user.uid) : null;
+  classroom = user ? new Classroom(runtime.db, user) : null;
   authorized = false; rooms = []; loading = true;
   void (async () => {
     try {
@@ -180,7 +180,7 @@ appRoot.addEventListener('submit', e => {
       await runtime.auth.authStateReady();
       const user = runtime.auth.currentUser;
       if (!user?.isAnonymous) throw new Error('學生請使用匿名身分加入。');
-      const current = new Classroom(runtime.db, user.uid);
+      const current = new Classroom(runtime.db, user);
       const joined = await current.joinRoom(entered, nickname);
       classroom = current; openRoom(joined.room);
     } catch (e) { message = cloudError(e); }

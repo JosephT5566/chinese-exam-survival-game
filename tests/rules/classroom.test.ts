@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { assertFails, assertSucceeds, initializeTestEnvironment } from '@firebase/rules-unit-testing';
-import type { RulesTestContext, RulesTestEnvironment } from '@firebase/rules-unit-testing';
+import type { RulesTestContext, RulesTestEnvironment, TokenOptions } from '@firebase/rules-unit-testing';
 import {
   collection, deleteDoc, doc, getDoc, getDocs, query, serverTimestamp, setDoc,
   Timestamp, updateDoc, where, writeBatch,
@@ -25,7 +25,7 @@ function student(uid = 's1') {
   return env.authenticatedContext(uid, { firebase: { sign_in_provider: 'anonymous' } }).firestore();
 }
 function teacher(uid = 't1') {
-  return env.authenticatedContext(uid, { firebase: { sign_in_provider: 'google.com' } }).firestore();
+  return env.authenticatedContext(uid, { email: `${uid}@example.test`, email_verified: true, firebase: { sign_in_provider: 'google.com' } }).firestore();
 }
 function playerRef(db: Firestore, uid = 's1') { return doc(db, `rooms/r1/players/${uid}`); }
 function answerRef(db: Firestore, id = 'q1', uid = 's1') {
@@ -84,8 +84,8 @@ beforeEach(async () => {
   await env.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     const batch = writeBatch(db);
-    batch.set(doc(db, 'teachers/t1'), { authorized: true });
-    batch.set(doc(db, 'teachers/t2'), { authorized: true });
+    batch.set(doc(db, 'teacherEmails/t1@example.test'), { authorized: true });
+    batch.set(doc(db, 'teacherEmails/t2@example.test'), { authorized: true });
     batch.set(doc(db, 'rooms/r1'), room());
     batch.set(doc(db, 'rooms/r2'), room('t2', 'running', 'DEF456'));
     batch.set(doc(db, 'roomCodes/ABC123'), { roomId: 'r1', ownerUid: 't1' });
@@ -96,8 +96,34 @@ beforeEach(async () => {
 });
 
 describe('身分與私人資料', () => {
+  it('驗證過的 Google email 不分大小寫，但其他 provider 與缺少驗證都拒絕', async () => {
+    const claims = { email: 'T1@EXAMPLE.TEST', email_verified: true, firebase: { sign_in_provider: 'google.com' } } satisfies TokenOptions;
+    await assertSucceeds(getDoc(doc(env.authenticatedContext('t1', claims).firestore(), 'rooms/r1')));
+    const invalid: TokenOptions[] = [
+      { ...claims, email_verified: false },
+      { email: claims.email, firebase: claims.firebase },
+      { email_verified: true, firebase: claims.firebase },
+      { ...claims, email: 'outsider@example.test' },
+      { ...claims, firebase: { sign_in_provider: 'password' } },
+      { ...claims, firebase: { sign_in_provider: 'anonymous' } },
+    ];
+    for (const token of invalid) await assertFails(getDoc(doc(env.authenticatedContext('t1', token).firestore(), 'rooms/r1')));
+  });
+  it('相同 email 的另一個 UID 可獲老師資格，但不能繼承原 UID 的教室', async () => {
+    const db = env.authenticatedContext('new-uid', { email: 't1@example.test', email_verified: true,
+      firebase: { sign_in_provider: 'google.com' } }).firestore();
+    await assertSucceeds(getDoc(doc(db, 'teacherEmails/t1@example.test')));
+    await assertFails(getDoc(doc(db, 'rooms/r1')));
+  });
+  it('舊 UID 白名單不能授權，其他 email 的文件不能讀取', async () => {
+    await seed('teachers/outsider', { authorized: true });
+    await assertFails(getDoc(doc(teacher('outsider'), 'rooms/r1')));
+    await assertFails(getDoc(doc(teacher(), 'teacherEmails/t2@example.test')));
+    await assertFails(getDoc(doc(teacher(), 'teachers/t1')));
+  });
+
   it('Google + allowlist 的老師可讀自己的授權與房間', async () => {
-    await assertSucceeds(getDoc(doc(teacher(), 'teachers/t1')));
+    await assertSucceeds(getDoc(doc(teacher(), 'teacherEmails/t1@example.test')));
     await assertSucceeds(getDoc(doc(teacher(), 'rooms/r1')));
   });
   it('未核准 Google、匿名冒用老師 UID 都不能管理房間', async () => {
@@ -105,12 +131,12 @@ describe('身分與私人資料', () => {
     await assertFails(getDoc(doc(student('t1'), 'rooms/r1')));
   });
   it('客戶端不能自授權、修改或刪除 allowlist', async () => {
-    await assertFails(setDoc(doc(teacher('outsider'), 'teachers/outsider'), { authorized: true }));
-    await assertFails(updateDoc(doc(teacher(), 'teachers/t1'), { authorized: false }));
-    await assertFails(deleteDoc(doc(teacher(), 'teachers/t1')));
+    await assertFails(setDoc(doc(teacher('outsider'), 'teacherEmails/outsider@example.test'), { authorized: true }));
+    await assertFails(updateDoc(doc(teacher(), 'teacherEmails/t1@example.test'), { authorized: false }));
+    await assertFails(deleteDoc(doc(teacher(), 'teacherEmails/t1@example.test')));
   });
   it('撤銷 allowlist 後，Google 老師立即失去房間權限', async () => {
-    await seed('teachers/t1', { authorized: false });
+    await seed('teacherEmails/t1@example.test', { authorized: false });
     await assertFails(getDoc(doc(teacher(), 'rooms/r1')));
   });
   it('學生可讀本人，不能讀別人；老師可讀自己全班玩家', async () => {
@@ -128,7 +154,7 @@ describe('身分與私人資料', () => {
   it('房間查詢限擁有者條件，不能列舉全站或他人授權資料', async () => {
     await assertSucceeds(getDocs(query(collection(teacher(), 'rooms'), where('ownerUid', '==', 't1'))));
     await assertFails(getDocs(collection(teacher(), 'rooms')));
-    await assertFails(getDocs(collection(teacher(), 'teachers')));
+    await assertFails(getDocs(collection(teacher(), 'teacherEmails')));
   });
   it('加入碼只可登入後精確查詢，不能列舉', async () => {
     await assertSucceeds(getDoc(doc(student('new'), 'roomCodes/ABC123')));

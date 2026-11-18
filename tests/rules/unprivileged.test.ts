@@ -30,6 +30,7 @@ describe('未登入或沒有成員及老師權限的身分', () => {
       'rooms/example/players/student/events/1',
       'rooms/example/public/leaderboard',
       'teachers/teacher',
+      'teacherEmails/teacher@example.test',
     ]) {
       it(`${identity} 無法讀寫 ${path}`, async () => {
         const context = identity === 'unauthenticated'

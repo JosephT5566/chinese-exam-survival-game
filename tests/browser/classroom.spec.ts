@@ -19,7 +19,9 @@ test('teacher and student keep distinct identities and complete a cloud classroo
   await popup.locator('#email-input').fill(teacherEmail);
   await popup.getByRole('button', { name: 'Sign in with Google.com', exact: true }).click();
   await expect(teacher.getByRole('heading', { name: '等待老師授權' })).toBeVisible();
-  const provision = await promisify(execFile)(process.execPath, ['scripts/authorize-teachers.mjs', '--emulator', '--project', 'demo-chinese-exam', '--email', teacherEmail, '--apply']);
+  await expect(teacher.locator('code')).toHaveText(teacherEmail);
+  await teacher.screenshot({ path: testInfo.outputPath('teacher-pending-email.png'), fullPage: true });
+  await promisify(execFile)(process.execPath, ['scripts/authorize-teachers.mjs', '--emulator', '--project', 'demo-chinese-exam', '--email', teacherEmail, '--apply']);
   await teacher.getByRole('button', { name: '重新檢查授權' }).click();
   await teacher.getByRole('button', { name: '建立教室' }).click();
   await expect(teacher.locator('#share')).toHaveValue(/room=[A-Z0-9]{6}/);
@@ -91,9 +93,7 @@ test('teacher and student keep distinct identities and complete a cloud classroo
   await teacher.getByText(`${secondCode} · 等待開始`, { exact: true }).locator('..').getByRole('button').click();
   await expect(teacher.locator('#share')).toHaveValue(secondLink);
   await expect(teacher.getByText('測試同學', { exact: true })).not.toBeVisible();
-  const uid = provision.stdout.split(': ')[1]?.split(',')[0];
-  expect(uid).toBeTruthy();
-  const revoked = await context.request.patch(`http://127.0.0.1:8080/v1/projects/demo-chinese-exam/databases/(default)/documents/teachers/${encodeURIComponent(uid ?? '')}?updateMask.fieldPaths=authorized`, {
+  const revoked = await context.request.patch(`http://127.0.0.1:8080/v1/projects/demo-chinese-exam/databases/(default)/documents/teacherEmails/${encodeURIComponent(teacherEmail.toLowerCase())}?updateMask.fieldPaths=authorized`, {
     headers: { Authorization: 'Bearer owner' }, data: { fields: { authorized: { booleanValue: false } } },
   });
   expect(revoked.ok()).toBe(true);
@@ -111,4 +111,23 @@ test('demo navigation remains offline even when a cloud configuration exists', a
   const teacher = await opened;
   await expect(teacher).toHaveURL(/demo=1/);
   await expect(teacher.getByText('本機教室管理', { exact: true })).toBeVisible();
+});
+
+
+test('preauthorized email can enter the teacher console on first Google login', async ({ page }, testInfo) => {
+  const email = `preauthorized-${crypto.randomUUID()}@example.test`;
+  await promisify(execFile)(process.execPath, ['scripts/authorize-teachers.mjs', '--emulator', '--project', 'demo-chinese-exam', '--email', email, '--apply']);
+  await page.goto('/?view=teacher');
+  const opened = page.waitForEvent('popup');
+  await page.getByRole('button', { name: '使用 Google 登入' }).click();
+  const popup = await opened;
+  await popup.waitForLoadState();
+  await popup.getByText('Add new account').click();
+  await popup.locator('#email-input').fill(email);
+  await popup.getByRole('button', { name: 'Sign in with Google.com', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '老師控制台' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '等待老師授權' })).not.toBeVisible();
+  await page.getByRole('button', { name: '建立教室' }).click();
+  await expect(page.locator('#share')).toHaveValue(/room=[A-Z0-9]{6}/);
+  await page.screenshot({ path: testInfo.outputPath('preauthorized-teacher.png'), fullPage: true });
 });

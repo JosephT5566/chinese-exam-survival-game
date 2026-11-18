@@ -26,7 +26,7 @@ jobs:
       - run: npm run test:browser
 
   deploy:
-    name: Deploy Firebase Hosting
+    name: Deploy teacher allowlist, rules and Hosting
     needs: check
     if: >-
       github.repository == 'JosephT5566/chinese-exam-survival-game' &&
@@ -58,13 +58,29 @@ jobs:
             echo 'current=false' >> "$GITHUB_OUTPUT"
             echo 'Skipping a commit superseded on main.' >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Validate teacher email configuration
+        if: steps.latest.outputs.current == 'true'
+        env:
+          TEACHER_EMAILS: ${{ vars.TEACHER_EMAILS }}
+        run: node scripts/authorize-teachers.mjs --project chinese-exam-survival-game --validate-env
       - name: Authenticate with short-lived Google credentials
+        id: auth
         if: steps.latest.outputs.current == 'true'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
+          token_format: access_token
           project_id: chinese-exam-survival-game
           workload_identity_provider: projects/355829324177/locations/global/workloadIdentityPools/github-hosting/providers/hosting-deploy
           service_account: github-hosting-deploy@chinese-exam-survival-game.iam.gserviceaccount.com
+      - name: Sync teacher email allowlist
+        if: steps.latest.outputs.current == 'true'
+        env:
+          TEACHER_EMAILS: ${{ vars.TEACHER_EMAILS }}
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: node scripts/authorize-teachers.mjs --project chinese-exam-survival-game --sync-env --apply
+      - name: Deploy Firestore rules
+        if: steps.latest.outputs.current == 'true'
+        run: npx --no-install firebase deploy --only firestore:rules --project chinese-exam-survival-game --non-interactive
       - name: Deploy static website
         if: steps.latest.outputs.current == 'true'
         run: npx --no-install firebase deploy --only hosting --project chinese-exam-survival-game --non-interactive

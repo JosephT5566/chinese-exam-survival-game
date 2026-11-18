@@ -5,9 +5,14 @@ service cloud.firestore {
     function anonymous() {
       return signedIn() && request.auth.token.firebase.sign_in_provider == 'anonymous';
     }
-    function teacher() {
+    function verifiedGoogle() {
       return signedIn() && request.auth.token.firebase.sign_in_provider == 'google.com'
-        && get(/databases/$(database)/documents/teachers/$(request.auth.uid)).data.authorized == true;
+        && request.auth.token.email_verified == true && request.auth.token.email is string;
+    }
+    function teacherEmail() { return request.auth.token.email.lower(); }
+    function teacher() {
+      return verifiedGoogle()
+        && get(/databases/$(database)/documents/teacherEmails/$(teacherEmail())).data.authorized == true;
     }
     function owner(roomId) {
       return teacher() && get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerUid == request.auth.uid;
@@ -176,8 +181,8 @@ service cloud.firestore {
     }
     // END GENERATED LEADERBOARD VALIDATION
 
-    match /teachers/{uid} {
-      allow get: if teacher() && request.auth.uid == uid;
+    match /teacherEmails/{email} {
+      allow get: if verifiedGoogle() && teacherEmail() == email;
     }
     match /roomCodes/{joinCode} {
       allow get: if signedIn() && code(joinCode);
