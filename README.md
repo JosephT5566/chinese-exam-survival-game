@@ -4,7 +4,7 @@
 
 本分支提供可操作的本機像素教室。以 localhost 開啟後，在預設 DEMO01 輸入暱稱加入，於等待頁另開老師控制台並按「開始闖關」，再回到學生分頁。老師可暫停、恢復或結束。若要演示多人，在開始前由老師點「新增示範玩家」另開分頁。結束後可建立新的示範房間。
 
-進度保存在同一瀏覽器。40 題與教材對應仍待老師校對，命運事件每三題顯示一次待設定提示，暫無獎勵。老師開啟控制台會發布全班快照，最快每 10 秒一次；學生分數在作答後更新。Firebase Anonymous／Google Auth、老師 allowlist 與 Firestore 跨裝置同步留待串接。
+進度保存在同一瀏覽器。40 題與教材對應仍待老師校對，命運事件每三題顯示一次待設定提示，暫無獎勵。老師開啟控制台會發布全班快照，最快每 10 秒一次；學生分數在作答後更新。Firebase Anonymous／Google Auth、老師 allowlist 與 Firestore 跨裝置同步留待串接。Firebase 服務與正式 rules 狀態見 [Firebase 設定紀錄](docs/firebase-setup.md)。
 
 ## 本機開始，Windows PowerShell 亦適用
 
@@ -24,7 +24,7 @@ npm run test:rules
 npm run emulators
 ```
 
-`check` 執行 strict 型別檢查、遊戲與發布設定測試 與 production build。`test:rules` 自動啟停 Firestore Emulator，驗證三種身分都被目前規則拒絕，並非未來完整房間權限測試。Emulator 使用 `demo-chinese-exam`，不需登入 Firebase、不會指向正式專案。預設 Auth 9099、Firestore 8080、Emulator UI 4000；Vite 尚未串接 Emulator。
+`check` 檢查 rules 產生碼、strict 型別、遊戲與發布設定測試 與 production build。`test:rules` 自動啟停 Firestore Emulator，驗證老師 allowlist、房間狀態、跨學生隔離、原子計分、重複操作拒絕及完整 30 人排名快照。Emulator 使用 `demo-chinese-exam`，不需登入 Firebase、不會指向正式專案。預設 Auth 9099、Firestore 8080、Emulator UI 4000；Vite 尚未串接 Emulator。
 
 ## 目錄與下一步
 
@@ -32,19 +32,22 @@ npm run emulators
 
 本次本機工具更新版本與相依套件 audit 結果見 [開發環境紀錄](docs/development-environment.md)。
 
+Firestore 權限與原子寫入的 exact schema 見 [資料契約](docs/firestore-contract.md)。規則已於 2026-11-18 發布並讀回驗證；前端尚未串接這些資料操作。手動刪除功能完成前，rules 仍拒絕所有客戶端刪除。
+
 ## Firebase 設定與部署，必須另行授權
 
-以下是未來部署操作文件，本次沒有執行。先由專案擁有者核准部署目標、正式 rules 與產品驗收。Firebase 專案須已建立 Hosting、Firestore、Anonymous／Google Auth，並建立老師 allowlist。不得為此升級 Blaze 或啟用 billing。
+Hosting site 已設定為 `chinese-exam-survival-game`，發布目錄為 `dist`，不需重新執行 `firebase init`。以下指令於合併後的最新 `main` 執行，Windows PowerShell 與 macOS 均適用。本次僅合併程式碼，尚未執行部署。
 
 ```powershell
+npm ci
 npx firebase login
-Copy-Item .firebaserc.example .firebaserc
-# 編輯 .firebaserc 為已核准的專案 ID
-npm run build
-npx firebase deploy --only hosting --project YOUR_FIREBASE_PROJECT_ID
+npm run check
+npx firebase deploy --only hosting --project chinese-exam-survival-game
 ```
 
-目前規則是全拒絕，未來實作並通過 Emulator 測試、經核准後才可發布 rules。Hosting 指令刻意只發布靜態網站。尚無實際 Hosting URL 或 QR code。
+發布成功後開啟 https://chinese-exam-survival-game.web.app ，檢查入口、加入、作答與重新整理。`--only hosting` 僅發布靜態網站，不發布 Firestore rules。Git push 或 merge 本身不會部署，目前 GitHub Actions 僅執行檢查。
+
+這版發布後仍是同一瀏覽器的本機示範，各裝置各自保存進度。正式課堂的跨裝置加入、Google／Anonymous 登入與 Firestore 同步仍需後續串接。正式 rules 的發布狀態見 [Firebase 設定紀錄](docs/firebase-setup.md)。
 
 回滾：在 Firebase Console → Hosting → release history 選已知正常版本回復。Hosting rollback 不會回復 Firestore 資料或 rules；資料還原須有事先備份與獨立授權。
 
@@ -53,7 +56,7 @@ npx firebase deploy --only hosting --project YOUR_FIREBASE_PROJECT_ID
 - 無法啟動 Vite：檢查 `node --version` 為 24，再執行 `npm ci`。
 - Emulator 找不到 Java：安裝 JDK 21 以上並重新開啟終端機，以 `java -version` 確認。
 - Port 被占用：停止既有 Emulator，或同步修改 `firebase.json` 與 rules 測試連線埠。
-- Permission denied：初始化 rules 預期拒絕所有存取，尚未完成房間功能。
+- Permission denied：須使用正確 Auth provider、老師 allowlist、membership 與原子寫入，詳見資料契約。Google 登入不會自動取得老師權限。
 - 切勿提交 `.env.local`、service account JSON、存取權杖或學生資料。
 
 ## 首次課堂驗收，後續功能完成後執行

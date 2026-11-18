@@ -21,7 +21,7 @@ afterAll(async () => {
   await environment?.cleanup();
 });
 
-describe('初始化的預設拒絕規則', () => {
+describe('未登入或沒有成員及老師權限的身分', () => {
   for (const identity of ['unauthenticated', 'student', 'teacher']) {
     for (const path of [
       'rooms/example',

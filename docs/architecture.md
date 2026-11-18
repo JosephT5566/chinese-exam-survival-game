@@ -8,6 +8,8 @@
 
 ## 排行策略比較，尚未實作
 
+下表為最初方案比較。使用者已選擇老師約每 10 秒產生快照；本機 rules 實作時為避開 1,000 次規則運算限制，將快照拆成兩份各 15 筆、同 batch 更新，完整 30 人排行讀取估算改為每場約 12,780 次。確切資料契約見 `docs/firestore-contract.md`；前端同步尚未實作。
+
 以 30 人、30 分鐘、每人 40 次作答、13 次事件估算。以下為文件交付量模型，不是帳單承諾；重連、rules 相依讀取、計數器、額外心跳另計。
 
 | 方案 | 估計排行讀取 | 權限與限制 |
@@ -22,7 +24,7 @@
 
 ## 安全與資料保留
 
-目前 rules 全拒絕，沒有可用的老師或學生權限。後續老師 Google 登入只提供身分；管理員另建 `teachers/{uid}` 的 `authorized: true` 文件，客戶端永遠不可自授權。專案擁有者在 Firebase Console 取得老師 UID 並建立 allowlist。
+rules 已實作老師 Google + allowlist、房間所有權、私人資料隔離及原子計分，並於 2026-11-18 經授權發布。管理員另建 `teachers/{uid}` 的 `authorized: true` 文件，客戶端永遠不可自授權。實際欄位與操作見 `docs/firestore-contract.md`。前端尚未串接。
 
 Spark MVP 的用戶端分數與隨機結果可被竄改，隨瀏覽器發送的答案可被檢視，不能當正式考試成績。transactions、不可變 answer/event 記錄及 rules 僅能減少一般重複領分。
 

@@ -1,7 +1,7 @@
 # 國文段考生存戰：命運大富翁 — Product & Engineering Specification
 
 > Status: Core classroom/gameplay decisions confirmed; secondary product decisions pending / Codex handoff  
-> Version: 0.3 — 2026-11-18  
+> Version: 0.4 — 2026-11-18
 > Language: Traditional Chinese (zh-TW)  
 > Deployment target: Firebase Hosting  
 > IMPORTANT: Open decisions are explicitly marked `[待確認]`. Do not silently assume them.
@@ -321,15 +321,19 @@ teachers/{teacherUid}
 9. **Leaderboard visibility: DECIDED.** Students and teacher can see **all 30 players' rankings**. Design for readable tablet display and cost-efficient updates; do not revert to top 10.
 10. **Retention: DECIDED.** Teacher manually deletes room data; recommend cleanup within 30 days. No automatic deletion requirement in MVP; deletion must include nested data.
 
+### Confirmed during Firestore rules design (2026-11-18)
+
+- **Leaderboard synchronization: DECIDED.** Teacher aggregates changed player data at most every 10 seconds; students listen to the public snapshot and see all 30 players. Teacher must stay online; display the last update time. Personal score/progress remain immediate. Implementation uses two atomically updated documents of up to 15 entries each to stay within rules evaluation limits; frontend combines only matching timestamps and derives ranks from ordered nickname/score entries.
+- **Student join format: DECIDED.** Six uppercase alphanumeric characters for room codes, nickname length 2–12 characters.
+- **Late join: DECIDED.** New participants may join only while the room is in lobby. Existing participants can restore their saved state afterward.
+- **Pause behavior: DECIDED.** Pause blocks new answer submissions, explanation rewards and luck claims. Existing submitted explanations remain readable; pending rewards can be submitted after resume.
+
 ### Pending — secondary decisions only; defaults are proposals, not approvals
 
 | Priority | Topic | Proposed default | Why it matters |
 |---|---|---|---|
-| P1 | Pause behavior | Proposed: teacher pause blocks new submissions; students resume from saved progress | Classroom control |
 | 已決定 | Results export | 本輪不提供 CSV 匯出 | 2026-11-18 教師確認 |
 | P1 | Room scope | One teacher and one active room for MVP; design schema to allow future rooms | Complexity |
-| P1 | Student join | 6-character room code and QR/deep link; nickname length 2–12 chars | Classroom UX |
-| P1 | Leaderboard strategy | Compare full-30 leaderboard listener vs other cost-controlled full-30 designs; calculate 30-client read costs before implementation | Free quota risk |
 | P2 | Music / sound effects | Muted by default; original/license-cleared only | Accessibility, licensing |
 
 ### Implementation clarification: Firestore cost and trust model
