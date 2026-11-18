@@ -1,5 +1,8 @@
-name: Repository checks
-on: [push, pull_request]
+name: Repository checks and Hosting deployment
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -18,3 +21,51 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run test:rules
+
+  deploy:
+    name: Deploy Firebase Hosting
+    needs: check
+    if: >-
+      github.repository == 'JosephT5566/chinese-exam-survival-game' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: firebase-hosting-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Skip superseded main commits
+        id: latest
+        run: |
+          git fetch --no-tags origin main
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            echo 'Skipping a commit superseded on main.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Authenticate with short-lived Google credentials
+        if: steps.latest.outputs.current == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: chinese-exam-survival-game
+          workload_identity_provider: projects/355829324177/locations/global/workloadIdentityPools/github-hosting/providers/hosting-deploy
+          service_account: github-hosting-deploy@chinese-exam-survival-game.iam.gserviceaccount.com
+      - name: Deploy static website
+        if: steps.latest.outputs.current == 'true'
+        run: npx --no-install firebase deploy --only hosting --project chinese-exam-survival-game --non-interactive
+      - name: Publish website link
+        if: steps.latest.outputs.current == 'true'
+        run: |
+          echo 'Website: https://chinese-exam-survival-game.web.app' >> "$GITHUB_STEP_SUMMARY"
