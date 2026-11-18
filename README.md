@@ -45,7 +45,7 @@ npm run check
 npx firebase deploy --only hosting --project chinese-exam-survival-game
 ```
 
-發布成功後開啟 https://chinese-exam-survival-game.web.app ，檢查入口、加入、作答與重新整理。`--only hosting` 僅發布靜態網站，不發布 Firestore rules。Git push 或 merge 本身不會部署，目前 GitHub Actions 僅執行檢查。
+發布成功後開啟 https://chinese-exam-survival-game.web.app ，檢查入口、加入、作答與重新整理。`--only hosting` 僅發布靜態網站，不發布 Firestore rules。合併或 push 到 `main` 後，GitHub Actions 會先執行完整檢查，再自動發布 Hosting。PR 與其他分支只執行檢查，不部署。也可在 Actions 選擇此工作流程，以 `main` 手動重跑發布。流程使用 OIDC 短效憑證，不需設定 service account 私鑰 secret。設定與停用方式見 [Hosting 自動發布](docs/hosting-auto-deploy.md)。
 
 這版發布後仍是同一瀏覽器的本機示範，各裝置各自保存進度。正式課堂的跨裝置加入、Google／Anonymous 登入與 Firestore 同步仍需後續串接。正式 rules 的發布狀態見 [Firebase 設定紀錄](docs/firebase-setup.md)。
 
