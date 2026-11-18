@@ -80,3 +80,9 @@ npx firebase deploy --only hosting --project chinese-exam-survival-game
 - 上課前核對四單元各 10 題，以 2–3 台真實裝置驗收登入、加入、作答、詳解、刷新與斷線，再進行 30 台課堂壓測。
 
 資料欄位與原子操作見 [Firestore 資料契約](docs/firestore-contract.md)，架構背景見 [架構紀錄](docs/architecture.md)，題庫規範見 [題庫說明](src/questions/README.md)。
+
+## Agent 開發流程
+
+採用 Issue-first workflow，操作見 [Agent workflow](docs/agent-workflow.md)，專案規則與驗證矩陣見 [AGENTS.md](AGENTS.md)。先以 `issue-enhance` 整理規格；UI 變更經 `ui-design-gate` 選定方案，owner 確認並加上 `ai-ready` 後，由 `implement-from-issue` 實作、`verify` 驗證、另一個 session 以 `review-pr` 審查。專案導覽與文件維護使用 `chinese-exam-guide`。
+
+Issue／PR 範本放在 `.github/`，skills 放在 `.agents/skills/`。流程不會自行啟動；`ai-ready` label、branch protection 與 required checks 需由 repository owner 在 GitHub 設定。Agent 不合併 PR，owner 合併至 `main` 後可能觸發現有 Hosting 自動部署。
