@@ -150,6 +150,7 @@ test('demo navigation remains offline even when a cloud configuration exists', a
   await page.getByRole('button', { name: /送出答案/ }).click();
   await expect(page.getByRole('button', { name: /寶箱 [123]/ })).toHaveCount(3);
   await page.getByRole('button', { name: '寶箱 1', exact: true }).click();
+  await expect(page.locator('.chest-result')).toBeVisible();
   await page.reload();
   await expect(page.locator('.chest-result')).toBeVisible();
   await page.getByRole('button', { name: '確認領取', exact: true }).click();
