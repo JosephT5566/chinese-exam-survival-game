@@ -1,0 +1,18 @@
+.share-panel {
+  border: 2px solid var(--line, #bcc1a9);
+  background: var(--paper, #faf8eb);
+  padding: 16px;
+  margin-block: 16px;
+  overflow-wrap: anywhere;
+}
+.share-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.share-actions button, .share-qr-details summary { min-height: 48px; padding: 12px 16px; }
+.share-link { display: grid; gap: 8px; }
+.share-link input { width: 100%; min-height: 48px; padding: 10px; user-select: text; }
+.share-warning { color: #8a321b; }
+.share-qr-details { margin-top: 12px; text-align: center; }
+.share-qr-details summary { text-align: left; border: 2px solid var(--line, #bcc1a9); }
+.share-qr { width: min(100%, 560px); margin: 16px auto; background: white; }
+.share-qr svg { display: block; width: 100%; height: auto; }
+.share-status { min-height: 1.5em; margin-bottom: 0; }
+@media (min-width: 900px) { .share-qr-details[open] { padding: 16px; } }

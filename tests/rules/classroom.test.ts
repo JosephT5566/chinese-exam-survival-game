@@ -1,71 +1,89 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { assertFails, assertSucceeds, initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import type { RulesTestContext, RulesTestEnvironment, TokenOptions } from '@firebase/rules-unit-testing';
-import {
-  collection, deleteDoc, doc, getDoc, getDocs, query, serverTimestamp, setDoc,
-  Timestamp, updateDoc, where, writeBatch,
-} from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, query, serverTimestamp, setDoc,
+  Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 let env: RulesTestEnvironment;
 type Firestore = ReturnType<RulesTestContext['firestore']>;
 const past = Timestamp.fromMillis(1_700_000_000_000);
+const recent = () => Timestamp.fromMillis(Date.now() - 1000);
 const order = Array.from({ length: 40 }, (_, i) => `q${i + 1}`);
 const choices = Object.fromEntries(order.map((id) => [id, [0, 1, 2, 3]]));
-
 function room(ownerUid = 't1', status = 'running', code = 'ABC123') {
-  return { ownerUid, status, code, questionSetVersion: 'provisional-v1', createdAt: past,
-    updatedAt: past, startedAt: status === 'lobby' ? null : past, endedAt: null };
+  return { ownerUid, status, code, questionSetVersion: 'provisional-v1', rulesVersion: 2,
+    durationMinutes: 20, remainingMs: 1200000, runningSince: status === 'running' ? recent() : null,
+    pausedAt: null, playerCount: 2, createdAt: past, updatedAt: past,
+    startedAt: status === 'lobby' ? null : past, endedAt: null };
 }
 function player() {
   return { nickname: '小明', joinedAt: past, questionOrder: order, choiceOrders: choices,
-    completedCount: 0, score: 0, eventCount: 0, revision: 0, lastOperation: null, finishedAt: null };
+    completedCount: 0, revision: 0, lastOperation: null, finishedAt: null, cooldownStartedAt: null, pendingId: null };
 }
+function publicScore(score = 0, nickname = '小明') { return { nickname, score, lastOperation: null }; }
 function student(uid = 's1') {
   return env.authenticatedContext(uid, { firebase: { sign_in_provider: 'anonymous' } }).firestore();
 }
 function teacher(uid = 't1') {
-  return env.authenticatedContext(uid, { email: `${uid}@example.test`, email_verified: true, firebase: { sign_in_provider: 'google.com' } }).firestore();
+  return env.authenticatedContext(uid, { email: `${uid}@example.test`, email_verified: true,
+    firebase: { sign_in_provider: 'google.com' } }).firestore();
 }
 function playerRef(db: Firestore, uid = 's1') { return doc(db, `rooms/r1/players/${uid}`); }
-function answerRef(db: Firestore, id = 'q1', uid = 's1') {
-  return doc(db, `rooms/r1/players/${uid}/answers/${id}`);
-}
+function scoreRef(db: Firestore, uid = 's1') { return doc(db, `rooms/r1/scores/${uid}`); }
+function answerRef(db: Firestore, id = 'q1', uid = 's1') { return doc(db, `rooms/r1/players/${uid}/answers/${id}`); }
 async function seed(path: string, data: Record<string, unknown>) {
   await env.withSecurityRulesDisabled(async (context) => { await setDoc(doc(context.firestore(), path), data); });
 }
-function answerBatch(db: Firestore, options: {
-  id?: string; ordinal?: number; correct?: boolean; score?: number; revision?: number; uid?: string;
-} = {}) {
-  const { id = 'q1', ordinal = 1, correct = true, score = correct ? 100 : 0, revision = 1, uid = 's1' } = options;
+function answer(correct = true, ordinal = 1) {
+  return { ordinal, selectedChoice: 0, isCorrect: correct, explanationViewed: false, awardedPoints: 0,
+    answeredAt: serverTimestamp(), explanationViewedAt: null, chest: null };
+}
+function answerBatch(db: Firestore, { id = 'q1', ordinal = 1, correct = true, revision = 1 } = {}) {
   const batch = writeBatch(db);
-  batch.set(answerRef(db, id, uid), { ordinal, selectedChoice: 0, isCorrect: correct,
-    explanationViewed: false, awardedPoints: correct ? 100 : 0,
-    answeredAt: serverTimestamp(), explanationViewedAt: null });
-  batch.update(playerRef(db, uid), { completedCount: ordinal, score, revision,
-    lastOperation: { kind: 'answer', id }, finishedAt: ordinal === 40 ? serverTimestamp() : null });
+  batch.set(answerRef(db, id), answer(correct, ordinal));
+  batch.update(playerRef(db), { completedCount: ordinal, revision, lastOperation: { kind: 'answer', id },
+    pendingId: correct ? id : null, cooldownStartedAt: correct ? null : serverTimestamp(), finishedAt: null });
   return batch;
 }
-function explanationBatch(db: Firestore, score = 20, revision = 2) {
+function chest(kind = 'gain', amount = 80) {
+  return { box: 0, outcome: { kind, amount }, targetId: null, settled: false, delta: 0, fallback: false };
+}
+function openBatch(db: Firestore, c = chest(), id = 'q1', revision = 2) {
   const batch = writeBatch(db);
-  batch.update(answerRef(db), { explanationViewed: true, explanationViewedAt: serverTimestamp(), awardedPoints: 20 });
-  batch.update(playerRef(db), { score, revision, lastOperation: { kind: 'explanation', id: 'q1' } });
+  batch.update(answerRef(db, id), { chest: c });
+  batch.update(playerRef(db), { revision, lastOperation: { kind: 'open', id } });
   return batch;
 }
-function eventBatch(db: Firestore, delta = 80, score = 80, index = 1, revision = 4) {
+function claimBatch(db: Firestore, { c = chest(), targetId = null, own = 80,
+  other = 0, delta = 80, fallback = false, id = 'q1', revision = 3, final = false }: {
+    c?: ReturnType<typeof chest>; targetId?: string | null; own?: number; other?: number; delta?: number;
+    fallback?: boolean; id?: string; revision?: number; final?: boolean;
+  } = {}) {
   const batch = writeBatch(db);
-  batch.set(doc(db, `rooms/r1/players/s1/events/${index}`), {
-    eventIndex: index, awardedPoints: delta, createdAt: serverTimestamp(),
-  });
-  batch.update(playerRef(db), { score, eventCount: index, revision,
-    lastOperation: { kind: 'event', id: String(index) } });
+  batch.update(answerRef(db, id), { chest: { ...c, targetId, settled: true, delta, fallback } });
+  batch.update(playerRef(db), { revision, lastOperation: { kind: 'claim', id }, pendingId: null,
+    finishedAt: final ? serverTimestamp() : null });
+  batch.update(scoreRef(db), { score: own, lastOperation: { actor: 's1', id } });
+  if (targetId !== null) batch.update(scoreRef(db, targetId), { score: other, lastOperation: { actor: 's1', id } });
   return batch;
 }
-
+async function prepare(c = chest(), own = 0, other = 0) {
+  await seed('rooms/r1/scores/s1', publicScore(own));
+  await seed('rooms/r1/scores/s2', publicScore(other, '小華'));
+  await assertSucceeds(answerBatch(student()).commit());
+  await assertSucceeds(openBatch(student(), c).commit());
+}
+function joinBatch(db: Firestore, uid = 'new') {
+  const batch = writeBatch(db);
+  batch.set(playerRef(db, uid), { ...player(), joinedAt: serverTimestamp() });
+  batch.set(scoreRef(db, uid), publicScore());
+  batch.update(doc(db, 'rooms/r1'), { playerCount: 3 });
+  return batch;
+}
 beforeAll(async () => {
   env = await initializeTestEnvironment({ projectId: 'demo-chinese-exam', firestore: {
-    host: '127.0.0.1', port: 8080, rules: readFileSync('firestore.rules', 'utf8'),
-  } });
+    host: '127.0.0.1', port: 8080, rules: readFileSync('firestore.rules', 'utf8') } });
 });
 afterAll(async () => {
   try {
@@ -75,9 +93,7 @@ afterAll(async () => {
       if (!response.ok) throw new Error(`Coverage HTTP ${response.status}`);
       writeFileSync(path, await response.text());
     }
-  } finally {
-    await env?.cleanup();
-  }
+  } finally { await env?.cleanup(); }
 });
 beforeEach(async () => {
   await env.clearFirestore();
@@ -89,8 +105,10 @@ beforeEach(async () => {
     batch.set(doc(db, 'rooms/r1'), room());
     batch.set(doc(db, 'rooms/r2'), room('t2', 'running', 'DEF456'));
     batch.set(doc(db, 'roomCodes/ABC123'), { roomId: 'r1', ownerUid: 't1' });
-    batch.set(doc(db, 'rooms/r1/players/s1'), player());
-    batch.set(doc(db, 'rooms/r1/players/s2'), { ...player(), nickname: '小華' });
+    for (const [uid, nickname] of [['s1', '小明'], ['s2', '小華']]) {
+      batch.set(playerRef(db, uid), { ...player(), nickname });
+      batch.set(scoreRef(db, uid), publicScore(0, nickname));
+    }
     await batch.commit();
   });
 });
@@ -169,207 +187,255 @@ describe('身分與私人資料', () => {
   });
 });
 
-describe('房間與加入', () => {
+describe('v2 房間與原子加入', () => {
   function createRoom(db: Firestore, code = 'NEW123', ownerUid = 't1') {
     const batch = writeBatch(db);
-    batch.set(doc(db, 'rooms/new'), { ...room(ownerUid, 'lobby', code), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    batch.set(doc(db, 'rooms/new'), { ...room(ownerUid, 'lobby', code), playerCount: 0,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
     batch.set(doc(db, `roomCodes/${code}`), { ownerUid, roomId: 'new' });
     return batch;
   }
-  it('老師以 batch 同時建立 lobby 與加入碼', async () => { await assertSucceeds(createRoom(teacher()).commit()); });
-  it('拒絕單獨建房、非老師建立、偽造 owner 與無效加入碼', async () => {
-    await assertFails(setDoc(doc(teacher(), 'rooms/new'), { ...room('t1', 'lobby', 'NEW123'), createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
-    await assertFails(createRoom(student()).commit());
-    await assertFails(createRoom(teacher(), 'NEW123', 't2').commit());
-    await assertFails(createRoom(teacher(), 'bad').commit());
-  });
-  it('不能覆寫既有加入碼或把索引改指向他人房間', async () => {
-    await assertFails(createRoom(teacher(), 'ABC123').commit());
+  it('教師原子建立房間，學生與假 owner 無法建房', async () => {
+    await assertSucceeds(createRoom(teacher()).commit());
+    await assertFails(createRoom(student(), 'NEW124').commit());
+    await assertFails(createRoom(teacher(), 'NEW125', 't2').commit());
     await assertFails(updateDoc(doc(teacher(), 'roomCodes/ABC123'), { roomId: 'r2' }));
   });
-  it('老師可開始、暫停、恢復、結束、封存，不能重開或換 owner', async () => {
+  it('加入必須同時建立私人進度、公開零分並正確加一人數，不能重複加入', async () => {
     await seed('rooms/r1', room('t1', 'lobby'));
-    const reference = doc(teacher(), 'rooms/r1');
-    await assertSucceeds(updateDoc(reference, { status: 'running', startedAt: serverTimestamp(), updatedAt: serverTimestamp() }));
-    await assertSucceeds(updateDoc(reference, { status: 'paused', updatedAt: serverTimestamp() }));
-    await assertSucceeds(updateDoc(reference, { status: 'running', updatedAt: serverTimestamp() }));
-    await assertFails(updateDoc(reference, { ownerUid: 't2', updatedAt: serverTimestamp() }));
-    await assertSucceeds(updateDoc(reference, { status: 'ended', endedAt: serverTimestamp(), updatedAt: serverTimestamp() }));
-    await assertSucceeds(updateDoc(reference, { status: 'archived', updatedAt: serverTimestamp() }));
-    await assertFails(updateDoc(reference, { status: 'running', updatedAt: serverTimestamp() }));
+    const db = student('new');
+    await assertFails(setDoc(playerRef(db, 'new'), { ...player(), joinedAt: serverTimestamp() }));
+    await assertFails(setDoc(scoreRef(db, 'new'), publicScore()));
+    await assertFails(updateDoc(doc(db, 'rooms/r1'), { playerCount: 3 }));
+    const bad = joinBatch(db); bad.update(doc(db, 'rooms/r1'), { playerCount: 4 });
+    await assertFails(bad.commit());
+    const badScore = joinBatch(db); badScore.update(scoreRef(db, 'new'), { score: 20 });
+    await assertFails(badScore.commit());
+    await assertSucceeds(joinBatch(db).commit());
+    await assertFails(joinBatch(db).commit());
   });
-  it('學生、其他老師不能改房間，且不允許跳過開始時間', async () => {
-    for (const db of [student(), teacher('t2')]) {
-      await assertFails(updateDoc(doc(db, 'rooms/r1'), { status: 'paused', updatedAt: serverTimestamp() }));
-    }
+  it('未加入匿名學生可讀 lobby metadata，但不能列房間或讀私人文件與公開分數', async () => {
     await seed('rooms/r1', room('t1', 'lobby'));
-    await assertFails(updateDoc(doc(teacher(), 'rooms/r1'), { status: 'running', updatedAt: serverTimestamp() }));
+    const db = student('new');
+    await assertSucceeds(getDoc(doc(db, 'rooms/r1')));
+    await assertFails(getDocs(collection(db, 'rooms')));
+    await assertFails(getDoc(playerRef(db)));
+    await assertFails(getDoc(scoreRef(db)));
+    await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), 'rooms/r1')));
+    await assertFails(getDoc(doc(teacher('outsider'), 'rooms/r1')));
+    await seed('rooms/r1', room());
+    await assertFails(getDoc(doc(db, 'rooms/r1')));
   });
-  it('新匿名學生只在 lobby 以零分與固定排列加入', async () => {
-    await seed('rooms/r1', room('t1', 'lobby'));
-    await assertSucceeds(setDoc(playerRef(student('new'), 'new'), { ...player(), joinedAt: serverTimestamp() }));
-    await assertFails(setDoc(playerRef(student('new'), 'new'), { ...player(), joinedAt: serverTimestamp() }));
-    await assertFails(setDoc(playerRef(teacher('new'), 'new'), { ...player(), joinedAt: serverTimestamp() }));
-  });
-  for (const status of ['running', 'paused', 'ended', 'archived']) {
-    it(`${status} 不接受新學生`, async () => {
+  it('30 人上限、非匿名身分、無效索引與非 lobby 禁止加入', async () => {
+    for (const status of ['running', 'paused', 'ended', 'archived']) {
       await seed('rooms/r1', room('t1', status));
-      await assertFails(setDoc(playerRef(student('new'), 'new'), { ...player(), joinedAt: serverTimestamp() }));
-    });
-  }
-  it('拒絕不合長度暱稱、初始加分、重複題序、缺少加入索引及額外 role', async () => {
-    await seed('rooms/r1', room('t1', 'lobby'));
-    const reference = playerRef(student('new'), 'new');
-    for (const patch of [{ nickname: '一' }, { nickname: '字'.repeat(13) }, { score: 100 },
-      { questionOrder: Array(40).fill('q1') }, { role: 'teacher' }]) {
-      await assertFails(setDoc(reference, { ...player(), ...patch, joinedAt: serverTimestamp() }));
+      await assertFails(joinBatch(student('new')).commit());
     }
+    await seed('rooms/r1', { ...room('t1', 'lobby'), playerCount: 30 });
+    await assertFails(joinBatch(student('new')).commit());
+    await seed('rooms/r1', room('t1', 'lobby'));
+    await assertFails(joinBatch(teacher('new')).commit());
     await seed('roomCodes/ABC123', { roomId: 'r2', ownerUid: 't2' });
-    await assertFails(setDoc(reference, { ...player(), joinedAt: serverTimestamp() }));
+    await assertFails(joinBatch(student('new')).commit());
+  });
+  it('教師可設定時間、開始、精確暫停恢復、結束封存', async () => {
+    await seed('rooms/r1', room('t1', 'lobby'));
+    const ref = doc(teacher(), 'rooms/r1');
+    await assertFails(updateDoc(ref, { durationMinutes: 0, remainingMs: 0, updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(ref, { durationMinutes: 1, remainingMs: 60000, updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(ref, { status: 'running', startedAt: serverTimestamp(), runningSince: serverTimestamp(), updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(ref, { status: 'paused', runningSince: null, updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(ref, { status: 'paused', pausedAt: serverTimestamp(), updatedAt: serverTimestamp() }));
+    const paused = (await getDoc(ref)).data();
+    const elapsed = Math.floor(paused?.pausedAt.toMillis() - paused?.runningSince.toMillis());
+    await assertFails(updateDoc(ref, { status: 'running', remainingMs: 60001, pausedAt: null, runningSince: serverTimestamp(), updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(ref, { status: 'running', remainingMs: 60000 - elapsed, pausedAt: null, runningSince: serverTimestamp(), updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(ref, { status: 'ended', remainingMs: 0, runningSince: null, pausedAt: null, endedAt: serverTimestamp(), updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(ref, { status: 'archived', updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(ref, { status: 'running', runningSince: serverTimestamp(), updatedAt: serverTimestamp() }));
+  });
+  it('到期禁止作答、暫停、恢復或加時間，允許教師結束', async () => {
+    await seed('rooms/r1', { ...room(), runningSince: past, remainingMs: 1 });
+    await assertFails(answerBatch(student()).commit());
+    await assertFails(updateDoc(doc(teacher(), 'rooms/r1'), { status: 'paused', pausedAt: serverTimestamp(), updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(doc(teacher(), 'rooms/r1'), { remainingMs: 3600000, updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(doc(teacher(), 'rooms/r1'), { status: 'ended', remainingMs: 0, runningSince: null, pausedAt: null, endedAt: serverTimestamp(), updatedAt: serverTimestamp() }));
+  });
+  it('舊版本房間仍可讀，不能作答、加入、改房間', async () => {
+    const { rulesVersion: _v, ...legacy } = room('t1', 'lobby');
+    await seed('rooms/r1', legacy);
+    await assertSucceeds(getDoc(doc(student(), 'rooms/r1')));
+    await seed('rooms/r1/players/s1/events/1', { eventIndex: 1, awardedPoints: 80, createdAt: past });
+    await assertSucceeds(getDoc(doc(student(), 'rooms/r1/players/s1/events/1')));
+    await assertFails(getDoc(doc(student('s2'), 'rooms/r1/players/s1/events/1')));
+    await assertFails(updateDoc(doc(student(), 'rooms/r1/players/s1/events/1'), { awardedPoints: 100 }));
+    await assertFails(joinBatch(student('new')).commit());
+    await assertFails(answerBatch(student()).commit());
+    await assertFails(updateDoc(doc(teacher(), 'rooms/r1'), { status: 'ended', updatedAt: serverTimestamp() }));
   });
 });
 
-describe('答案與詳解原子計分', () => {
-  it('正確作答只加 100，答案與 player 一起持久化', async () => {
+describe('v2 作答、冷卻、寶箱與公開分數', () => {
+  it('答案不加分且必須原子更新進度，不可跳題或重答', async () => {
     const db = student();
+    await assertFails(setDoc(answerRef(db), answer()));
+    await assertFails(answerBatch(db, { id: 'q2', ordinal: 2 }).commit());
+    const invalidChoice = answerBatch(db); invalidChoice.update(answerRef(db), { selectedChoice: 4 });
+    await assertFails(invalidChoice.commit());
+    const invalidAward = answerBatch(db); invalidAward.update(answerRef(db), { awardedPoints: 100 });
+    await assertFails(invalidAward.commit());
+    const twoAnswers = answerBatch(db); twoAnswers.set(answerRef(db, 'q2'), answer(true, 2));
+    await assertFails(twoAnswers.commit());
     await assertSucceeds(answerBatch(db).commit());
-    const result = await getDoc(playerRef(db));
-    expect(result.data()?.score).toBe(100);
-    expect(result.data()?.completedCount).toBe(1);
+    expect((await getDoc(scoreRef(db))).data()?.score).toBe(0);
     await assertFails(answerBatch(db).commit());
+    await assertFails(answerBatch(db, { id: 'q2', ordinal: 2, revision: 2 }).commit());
+    await assertFails(updateDoc(answerRef(db), { selectedChoice: 1 }));
   });
-  it('兩個並發提交同一題只成功一次，不會累加兩次分數', async () => {
-    const db = student();
-    const results = await Promise.allSettled([answerBatch(db).commit(), answerBatch(db).commit()]);
-    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-    expect((await getDoc(playerRef(db))).data()?.score).toBe(100);
-    expect((await getDocs(collection(db, 'rooms/r1/players/s1/answers'))).size).toBe(1);
-  });
-  it('錯誤提交先 0 分，看詳解才 +20，不能重領', async () => {
+  it('錯題只冷卻 3 秒，不能開箱或領詳解分，未滿冷卻不能前進', async () => {
     const db = student();
     await assertSucceeds(answerBatch(db, { correct: false }).commit());
-    expect((await getDoc(playerRef(db))).data()?.score).toBe(0);
-    await assertSucceeds(explanationBatch(db).commit());
-    expect((await getDoc(playerRef(db))).data()?.score).toBe(20);
-    await assertFails(explanationBatch(db, 40, 3).commit());
+    await assertFails(openBatch(db).commit());
+    await assertFails(answerBatch(db, { id: 'q2', ordinal: 2, revision: 2 }).commit());
+    await assertFails(updateDoc(answerRef(db), { explanationViewed: true, awardedPoints: 20 }));
+    await seed('rooms/r1/players/s1', { ...player(), completedCount: 1, revision: 1, cooldownStartedAt: past });
+    await assertSucceeds(answerBatch(db, { id: 'q2', ordinal: 2, revision: 2 }).commit());
   });
-  it('正確題不可額外領詳解分，錯題也不能提前領', async () => {
-    await assertSucceeds(answerBatch(student()).commit());
-    await assertFails(explanationBatch(student(), 120).commit());
-    await seed('rooms/r1/players/s1', player());
-    await assertFails(answerBatch(student(), { correct: false, score: 20 }).commit());
-  });
-  it('單改分、跳題、改洗牌、負分、越界選項與不完整原子操作都拒絕', async () => {
+  it('開箱僅能一次，outcome、box 不可重抽，不能直接領取或假冒分數', async () => {
     const db = student();
-    await assertFails(updateDoc(playerRef(db), { score: 100 }));
-    await assertFails(answerBatch(db, { id: 'q2', ordinal: 2 }).commit());
-    await assertFails(answerBatch(db, { score: -1 }).commit());
-    const bad = answerBatch(db);
-    bad.update(playerRef(db), { questionOrder: [...order].reverse() });
-    await assertFails(bad.commit());
-    const badChoice = answerBatch(db);
-    badChoice.update(answerRef(db), { selectedChoice: 4 });
-    await assertFails(badChoice.commit());
-    await assertFails(setDoc(answerRef(db), { ordinal: 1, selectedChoice: 0, isCorrect: true,
-      explanationViewed: false, awardedPoints: 100, answeredAt: serverTimestamp(), explanationViewedAt: null }));
-    await assertFails(updateDoc(playerRef(db), { score: 100, completedCount: 1, revision: 1,
-      lastOperation: { kind: 'answer', id: 'q1' } }));
+    await assertSucceeds(answerBatch(db).commit());
+    await assertFails(claimBatch(db).commit());
+    await assertFails(openBatch(db, chest('gain', 81)).commit());
+    const invalidBox = openBatch(db, { ...chest(), box: 3 });
+    await assertFails(invalidBox.commit());
+    await assertSucceeds(openBatch(db).commit());
+    await assertFails(openBatch(db, chest('loss', 30), 'q1', 3).commit());
+    await assertFails(updateDoc(scoreRef(db), { score: 80, lastOperation: { actor: 's1', id: 'q1' } }));
+    await assertFails(claimBatch(db, { c: { ...chest(), box: 1 } }).commit());
+    await assertFails(claimBatch(db, { own: 81, delta: 81 }).commit());
+    const leaked = claimBatch(db); leaked.update(scoreRef(db), { answers: ['private'] });
+    await assertFails(leaked.commit());
+    const renamed = claimBatch(db); renamed.update(scoreRef(db), { nickname: '偽造' });
+    await assertFails(renamed.commit());
+    const extraScore = claimBatch(db); extraScore.update(scoreRef(db, 's2'), { score: 80, lastOperation: { actor: 's1', id: 'q1' } });
+    await assertFails(extraScore.commit());
+    await assertSucceeds(claimBatch(db).commit());
+    await assertFails(claimBatch(db, { revision: 4, own: 160 }).commit());
+    expect((await getDoc(scoreRef(db))).data()?.score).toBe(80);
   });
-  it('不能一次塞兩題只更新一次玩家', async () => {
-    const db = student();
-    const batch = answerBatch(db);
-    batch.set(answerRef(db, 'q2'), { ordinal: 2, selectedChoice: 0, isCorrect: true,
-      explanationViewed: false, awardedPoints: 100, answeredAt: serverTimestamp(), explanationViewedAt: null });
-    await assertFails(batch.commit());
-  });
-  it('題目排列必須是完整四選項，不能提交其他題目', async () => {
-    await seed('rooms/r1/players/s1', { ...player(), choiceOrders: { ...choices, q1: [0, 0, 1, 2] } });
-    await assertFails(answerBatch(student()).commit());
-    await seed('rooms/r1/players/s1', player());
-    await assertFails(answerBatch(student(), { id: 'unknown' }).commit());
-  });
-  for (const status of ['lobby', 'paused', 'ended', 'archived']) {
-    it(`${status} 禁止新作答及錯題領分，但仍可讀既有答案`, async () => {
-      const db = student();
-      await assertSucceeds(answerBatch(db, { correct: false }).commit());
-      await seed('rooms/r1', room('t1', status));
-      await assertFails(answerBatch(db, { id: 'q2', ordinal: 2, score: 100, revision: 2 }).commit());
-      await assertFails(explanationBatch(db).commit());
-      await assertSucceeds(getDoc(answerRef(db)));
+  for (const [kind, amount, ownBefore, ownAfter] of [
+    ['gain', 20, 0, 20], ['gain', 50, 10, 60], ['gain', 80, 0, 80],
+    ['loss', 10, 50, 40], ['loss', 20, 10, 0], ['loss', 30, 0, 0],
+  ] satisfies [string, number, number, number][]) {
+    it(`${kind} ${amount} 精確計分並歸零`, async () => {
+      const c = chest(kind, amount); await prepare(c, ownBefore);
+      await assertSucceeds(claimBatch(student(), { c, own: ownAfter, delta: ownAfter - ownBefore }).commit());
     });
   }
-  it('老師能看自己房間答案，不能修改；學生不能跨人讀寫', async () => {
-    await assertSucceeds(answerBatch(student()).commit());
-    await assertSucceeds(getDoc(answerRef(teacher())));
-    await assertFails(getDoc(answerRef(student('s2'))));
-    await assertFails(getDoc(answerRef(teacher('t2'))));
-    await assertFails(updateDoc(answerRef(teacher()), { selectedChoice: 1 }));
-    await assertFails(answerBatch(student('s2'), { uid: 's1', id: 'q2', ordinal: 2, score: 200, revision: 2 }).commit());
-    await assertFails(updateDoc(answerRef(student()), { isCorrect: false }));
-    await assertFails(deleteDoc(answerRef(student())));
+  for (const [kind, ownBefore, otherBefore, ownAfter, otherAfter] of [
+    ['steal', 10, 200, 110, 100], ['steal', 10, 30, 40, 0], ['steal', 10, 0, 10, 0],
+    ['swap', 10, 200, 200, 10], ['swap', 10, 0, 0, 10],
+  ] satisfies [string, number, number, number, number][]) {
+    it(`${kind} 保持雙方分數守恆 ${ownBefore}/${otherBefore}`, async () => {
+      const c = chest(kind, 0); await prepare(c, ownBefore, otherBefore);
+      await assertFails(claimBatch(student(), { c, targetId: 's2', own: ownAfter + 1, other: otherAfter, delta: ownAfter + 1 - ownBefore }).commit());
+      await assertSucceeds(claimBatch(student(), { c, targetId: 's2', own: ownAfter, other: otherAfter, delta: ownAfter - ownBefore }).commit());
+      expect((await getDoc(scoreRef(student(), 's2'))).data()?.score).toBe(otherAfter);
+    });
+  }
+  it('公開分數可讀取但私人答案與進度不能跨人洩露', async () => {
+    await prepare(chest('steal', 0), 10, 80);
+    await assertSucceeds(getDocs(collection(student(), 'rooms/r1/scores')));
+    await assertFails(getDoc(playerRef(student(), 's2')));
+    await assertFails(getDoc(answerRef(student(), 'q1', 's2')));
+    await assertFails(getDoc(scoreRef(student('outsider'))));
+    await assertFails(getDoc(scoreRef(teacher('t2'))));
+    await assertSucceeds(claimBatch(student(), { c: chest('steal', 0), targetId: 's2', own: 90, other: 0, delta: 80 }).commit());
+    await assertFails(getDoc(playerRef(student(), 's2')));
   });
-  it('第 40 題設定完成時間，之後仍可領最後錯題詳解，不能提交第 41 題', async () => {
-    await seed('rooms/r1/players/s1', { ...player(), completedCount: 39, eventCount: 13, revision: 52 });
+  it('跨房、自選本人、缺少目標、多人時 fallback、只更新單方都拒絕', async () => {
+    const c = chest('steal', 0); await prepare(c, 10, 80);
+    await seed('rooms/r2/scores/outsider', publicScore(100));
+    await assertFails(claimBatch(student(), { c, targetId: 's1', own: 10, other: 10, delta: 0 }).commit());
+    await assertFails(claimBatch(student(), { c, targetId: 'outsider', own: 110, other: 0, delta: 100 }).commit());
+    await assertFails(claimBatch(student(), { c, own: 30, delta: 20, fallback: true }).commit());
     const db = student();
-    await assertSucceeds(answerBatch(db, { id: 'q40', ordinal: 40, correct: false, revision: 53 }).commit());
+    const missing = writeBatch(db);
+    missing.update(answerRef(db), { chest: { ...c, targetId: 's2', settled: true, delta: 80 } });
+    missing.update(playerRef(db), { revision: 3, pendingId: null, lastOperation: { kind: 'claim', id: 'q1' } });
+    missing.update(scoreRef(db), { score: 90, lastOperation: { actor: 's1', id: 'q1' } });
+    await assertFails(missing.commit());
+  });
+  for (const kind of ['steal', 'swap']) {
+    it(`單人 ${kind} fallback 恰加 20`, async () => {
+      const c = chest(kind, 0); await prepare(c, 10);
+      await seed('rooms/r1', { ...room(), playerCount: 1 });
+      await assertFails(claimBatch(student(), { c, own: 30, delta: 20, fallback: false }).commit());
+      await assertSucceeds(claimBatch(student(), { c, own: 30, delta: 20, fallback: true }).commit());
+    });
+  }
+  for (const status of ['lobby', 'paused', 'ended', 'archived']) {
+    it(`${status} 禁止答題、開箱、領取，既有答案可讀`, async () => {
+      await prepare(); await seed('rooms/r1', room('t1', status));
+      await assertFails(answerBatch(student(), { id: 'q2', ordinal: 2, revision: 3 }).commit());
+      await assertFails(openBatch(student(), chest(), 'q1', 3).commit());
+      await assertFails(claimBatch(student()).commit());
+      await assertSucceeds(getDoc(answerRef(student())));
+    });
+  }
+  it('沒有原子答案或公開分數的假 claim、改受害者私人進度都拒絕', async () => {
+    const c = chest('swap', 0); await prepare(c, 20, 80);
+    const db = student();
+    await assertFails(updateDoc(playerRef(db), { revision: 3, pendingId: null, lastOperation: { kind: 'claim', id: 'q1' } }));
+    const tamper = claimBatch(db, { c, targetId: 's2', own: 80, other: 20, delta: 60 });
+    tamper.update(playerRef(db, 's2'), { completedCount: 1, revision: 1 });
+    await assertFails(tamper.commit());
+    const badCounterpart = claimBatch(db, { c, targetId: 's2', own: 80, other: 21, delta: 60 });
+    await assertFails(badCounterpart.commit());
+    const mismatchedWitness = claimBatch(db, { c, targetId: 's2', own: 80, other: 20, delta: 60 });
+    mismatchedWitness.update(scoreRef(db, 's2'), { lastOperation: { actor: 's2', id: 'q1' } });
+    await assertFails(mismatchedWitness.commit());
+    await assertSucceeds(claimBatch(db, { c, targetId: 's2', own: 80, other: 20, delta: 60 }).commit());
+  });
+  it('得分上限與整數限制拒絕溢位，不能自行寫負數或小數', async () => {
+    await prepare(chest(), 95921);
+    await assertFails(claimBatch(student(), { own: 96001, delta: 80 }).commit());
+    await assertFails(updateDoc(scoreRef(student()), { score: -1 }));
+    await assertFails(updateDoc(scoreRef(student()), { score: 1.5 }));
+    await seed('rooms/r1/scores/s1', publicScore(95920));
+    await assertSucceeds(claimBatch(student(), { own: 96000, delta: 80 }).commit());
+  });
+  it('並發領同一寶箱只能成功一次', async () => {
+    await prepare(); const db = student();
+    const results = await Promise.allSettled([claimBatch(db).commit(), claimBatch(db).commit()]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect((await getDoc(scoreRef(db))).data()?.score).toBe(80);
+  });
+  it('到期不能開箱或領取，不能更改原答案或受害者進度', async () => {
+    await prepare(); await seed('rooms/r1', { ...room(), runningSince: past, remainingMs: 1 });
+    await assertFails(claimBatch(student()).commit());
+    await assertFails(openBatch(student(), chest(), 'q1', 3).commit());
+    await assertFails(updateDoc(playerRef(student(), 's2'), { revision: 1 }));
+  });
+  it('第 40 題正確需領完寶箱才完成，不可第 41 題', async () => {
+    await seed('rooms/r1/players/s1', { ...player(), completedCount: 39, revision: 117 });
+    const db = student();
+    await assertSucceeds(answerBatch(db, { id: 'q40', ordinal: 40, revision: 118 }).commit());
+    expect((await getDoc(playerRef(db))).data()?.finishedAt).toBeNull();
+    await assertSucceeds(openBatch(db, chest(), 'q40', 119).commit());
+    await assertSucceeds(claimBatch(db, { id: 'q40', revision: 120, final: true }).commit());
     expect((await getDoc(playerRef(db))).data()?.finishedAt).toBeInstanceOf(Timestamp);
-    await assertFails(answerBatch(db, { id: 'q41', ordinal: 41, revision: 54 }).commit());
-    const batch = writeBatch(db);
-    batch.update(answerRef(db, 'q40'), { explanationViewed: true, explanationViewedAt: serverTimestamp(), awardedPoints: 20 });
-    batch.update(playerRef(db), { score: 20, revision: 54, lastOperation: { kind: 'explanation', id: 'q40' } });
-    await assertSucceeds(batch.commit());
+    await assertFails(answerBatch(db, { id: 'q41', ordinal: 41, revision: 121 }).commit());
   });
-  it('完整 40 題與 13 次事件可持續提交，最終分數恰為 5040', async () => {
+  it('第 40 題錯誤在冷卻結束後 finish 操作完成，不能提前或重複完成', async () => {
+    await seed('rooms/r1/players/s1', { ...player(), completedCount: 39, revision: 39 });
     const db = student();
-    let revision = 0;
-    let total = 0;
-    for (let ordinal = 1; ordinal <= 40; ordinal++) {
-      total += 100;
-      await assertSucceeds(answerBatch(db, { id: `q${ordinal}`, ordinal, score: total, revision: ++revision }).commit());
-      if (ordinal % 3 === 0) {
-        total += 80;
-        await assertSucceeds(eventBatch(db, 80, total, ordinal / 3, ++revision).commit());
-      }
-    }
-    const final = (await getDoc(playerRef(db))).data();
-    expect(final?.score).toBe(5040);
-    expect(final?.completedCount).toBe(40);
-    expect(final?.eventCount).toBe(13);
-    expect(final?.revision).toBe(53);
-  });
-});
-
-describe('命運事件', () => {
-  beforeEach(async () => { await seed('rooms/r1/players/s1', { ...player(), completedCount: 3, revision: 3 }); });
-  it('第三題後事件可 +80，不能重領、修改或刪除', async () => {
-    const db = student();
-    await assertSucceeds(eventBatch(db).commit());
-    expect((await getDoc(playerRef(db))).data()?.score).toBe(80);
-    await assertFails(eventBatch(db, 80, 160, 1, 5).commit());
-    await assertFails(updateDoc(doc(db, 'rooms/r1/players/s1/events/1'), { awardedPoints: 0 }));
-    await assertFails(deleteDoc(doc(db, 'rooms/r1/players/s1/events/1')));
-  });
-  it('負事件歸零，不能存負分或故意不扣分', async () => {
-    await seed('rooms/r1/players/s1', { ...player(), score: 20, completedCount: 3, revision: 3 });
-    await assertFails(eventBatch(student(), -30, -10).commit());
-    await assertFails(eventBatch(student(), -30, 20).commit());
-    await assertSucceeds(eventBatch(student(), -30, 0).commit());
-  });
-  it('拒絕超界、小數、提前、跳號及第 14 次事件', async () => {
-    for (const delta of [-31, 81, 1.5]) await assertFails(eventBatch(student(), delta, Math.max(0, delta)).commit());
-    await assertFails(eventBatch(student(), 80, 80, 2).commit());
-    await seed('rooms/r1/players/s1', { ...player(), completedCount: 2, revision: 2 });
-    await assertFails(eventBatch(student(), 80, 80, 1, 3).commit());
-    await seed('rooms/r1/players/s1', { ...player(), completedCount: 40, eventCount: 13, revision: 53, finishedAt: past });
-    await assertFails(eventBatch(student(), 80, 80, 14, 54).commit());
-  });
-  it('事件紀錄與玩家更新不可分開寫', async () => {
-    await assertFails(setDoc(doc(student(), 'rooms/r1/players/s1/events/1'), { eventIndex: 1, awardedPoints: 80, createdAt: serverTimestamp() }));
-    await assertFails(updateDoc(playerRef(student()), { eventCount: 1, score: 80, revision: 4, lastOperation: { kind: 'event', id: '1' } }));
-  });
-  it('暫停不能領事件', async () => {
-    await seed('rooms/r1', room('t1', 'paused'));
-    await assertFails(eventBatch(student()).commit());
+    await assertSucceeds(answerBatch(db, { id: 'q40', ordinal: 40, revision: 40, correct: false }).commit());
+    const patch = { revision: 41, lastOperation: { kind: 'finish', id: 'q40' }, finishedAt: serverTimestamp() };
+    await assertFails(updateDoc(playerRef(db), patch));
+    await seed('rooms/r1/players/s1', { ...player(), completedCount: 40, revision: 40, cooldownStartedAt: past });
+    await assertSucceeds(updateDoc(playerRef(db), patch));
+    await assertFails(updateDoc(playerRef(db), { ...patch, revision: 42 }));
   });
 });
 
@@ -409,6 +475,13 @@ describe('全班排名快照', () => {
       { nickname: '小明', score: '1' }, { nickname: '小明', score: 1, rank: 1 }]) {
       await assertFails(snapshot(teacher(), [...entries.slice(0, 29), invalid]));
     }
+  });
+  it('舊房間快照可讀但不能再發布', async () => {
+    await assertSucceeds(snapshot(teacher()));
+    const { rulesVersion: _v, ...legacy } = room();
+    await seed('rooms/r1', legacy);
+    await assertSucceeds(getDoc(doc(student(), 'rooms/r1/public/leaderboard')));
+    await assertFails(snapshot(teacher()));
   });
   it('兩頁必須成對原子更新，禁止未知頁面與單頁更新', async () => {
     const db = teacher();

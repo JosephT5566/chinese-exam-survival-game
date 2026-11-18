@@ -1,15 +1,15 @@
 # Firestore 用戶端資料契約
 
-本文件對應 repository 的 `firestore.rules`。先前 UID 白名單版本曾於 2026-11-18 發布並讀回核對；本次 email 白名單版本尚未在此工作中發布或讀回驗證。已核准方案為老師約每 10 秒發布公開排名快照；學生自己的分數立即更新。快照以兩份原子更新的文件承載，前端串接見 `src/firebase/classroom.ts` 與 `src/app/cloud.ts`。
+本文件對應 repository 的 v2 寶箱競賽規則，不表示已部署或讀回驗證正式環境。新房間使用 rulesVersion 2，舊房間僅能回顧，不會靜默重算、重置或遷移。
 
 ## 身分與查詢
 
-- 學生用 Anonymous Auth。老師必須以 Google provider 登入，token 的 `email_verified` 為 true，且以 token email 小寫查得 `teacherEmails/{email}.authorized == true`。未驗證或其他 provider 即使 email 相同也不得授權。客戶端不能寫入 allowlist。
-- 已驗證 Google 帳號只可精確讀取自己 email 的授權文件，即使尚未授權也可讀取不存在／已撤銷狀態；不得列舉名單或讀取其他 email。資料存取另由 teacher() 檢查 authorized，能讀自己的授權狀態不代表具有老師資格。
-- 老師查房間時必須加 `where('ownerUid', '==', auth.currentUser.uid)`，不能列舉全站房間。
-- 學生以完整 6 位大寫英數碼 get `roomCodes/{code}`，得到 roomId，再建立自己的 membership。不可列舉加入碼。這不是防暴力猜碼機制。
-- 學生加入後可讀房間、自己的玩家、答案、事件，以及 `public/leaderboard`。不能讀其他玩家文件，連暱稱與分數也須從快照取得。
-- 老師只能讀自己房間的全部玩家、答案與事件，不能改寫學生私人資料或分數。可信任管理員 SDK 依 IAM 存取，不受這些 rules 限制。
+- 學生使用 Anonymous Auth。老師須為已驗證 Google provider，token email 小寫對應 `teacherEmails/{email}.authorized == true`；Google 登入本身不授予老師資格，客戶端不能自授權。
+- 已驗證 Google 使用者僅可精確讀取自己 email 的授權文件，不可列舉白名單或讀取他人授權。老師查房間須加 `where('ownerUid', '==', auth.currentUser.uid)`。
+- 加入前的匿名使用者可精確讀取 v2 lobby 房間的公開設定，供原子加入交易核對人數；不可列舉房間，也不能讀取尚未加入的 running 房間。
+- 學生以完整六位碼讀 `roomCodes/{code}`，不能列舉加入碼。加入後可讀房間、自己的私人玩家與答案、同房公開 `scores` 與兩份排名快照。
+- 他人 `players` 與 `answers` 仍私密；老師只能讀自己教室的私人進度。公開目標選單不讀私人排列、答案或 email。
+- 管理員 SDK 依 IAM 存取，不受 client rules 限制。教師與學生 Auth 儲存分開。
 
 ## 老師白名單與切換
 
@@ -24,85 +24,101 @@ teacherEmails/{email 小寫}
 
 管理端 IAM 寫入不受 client rules 約束。部署身份取得資料庫層級 Firestore 權限，並非僅能操作這個 collection；詳見 [部署設定](hosting-auto-deploy.md)。
 
-## 建立房間與加入
+## 房間與倒數
 
-使用同一個 batch 建立：
+同 batch 建立 `rooms/{roomId}` 與 `roomCodes/{code}`，相互核對不可變加入碼及 ownerUid：
 
 ```text
-rooms/{roomId}
-  code: 6 位大寫英數碼
-  ownerUid: 當前老師 UID
-  questionSetVersion: 非空字串，最多 80 字
-  status: 'lobby'
-  createdAt, updatedAt: serverTimestamp()
-  startedAt, endedAt: null
-
-roomCodes/{code}
-  roomId: 上述 roomId
-  ownerUid: 當前老師 UID
+room: code, ownerUid, questionSetVersion, rulesVersion: 2
+status: lobby
+createdAt, updatedAt: serverTimestamp()
+startedAt, endedAt, runningSince, pausedAt: null
+durationMinutes: 1–60 整數，預設20
+remainingMs: durationMinutes * 60000
+playerCount: 0
+roomCode: {roomId, ownerUid}
 ```
 
-加入碼與房間互相核對，建立後不可改 code、ownerUid、題庫版本或加入碼索引。老師只能依 `lobby → running ↔ paused → ended → archived` 轉換狀態；lobby／paused 也可直接 ended。每次帶 updatedAt；首次開始帶 startedAt；結束帶 endedAt，均為 serverTimestamp，其餘欄位維持原值。
+老師狀態為 `lobby → running ↔ paused → ended → archived`，lobby／paused 也能提前結束。只在 lobby 設定總分鐘。開始將 runningSince 設為 serverTimestamp；伺服器規則以 `request.time < runningSince + remainingMs` 拒絕超時操作，不依賴教師分頁在線。
 
-新學生只可在 lobby 建立 `rooms/{roomId}/players/{uid}`：
+暫停只保存 `pausedAt: serverTimestamp()`，保留原 runningSince 與 remainingMs。恢復以伺服器已保存的兩個時間差扣除消耗毫秒，再設定新的 runningSince 並清除 pausedAt。前端 parseRoom 將 paused 剩餘時間正規化，不讓教師暫停期間繼續倒數。此設計避免用戶端猜測未來 serverTimestamp，也不以誤差容忍放寬可用時間。到期不能再暫停／恢復。
+
+結束清除 runningSince／pausedAt、remainingMs 歸零、記錄 endedAt。老師控制台在線時自動結束到期教室並補發最終排名；離線時學生仍立即停止操作，老師回來後再補發。已結束資料不可改分。
+
+## 加入與私人玩家
+
+lobby 以同一 transaction 建立私人玩家、公開 score 並將 playerCount +1。規則要求原兩文件不存在、索引正確、整體計數最多30人，既有玩家重新加入只能讀回，不可重置。
 
 ```text
-nickname: 2–12 字元
+players/{uid}
+nickname: 2–12字元
 joinedAt: serverTimestamp()
-questionOrder: 40 個不重複的 question ID
-choiceOrders: 以全部 question ID 為 key、排列為 value 的 map
-completedCount, score, eventCount, revision: 0
-lastOperation, finishedAt: null
+questionOrder: 40個不重複question ID
+choiceOrders: question ID → [0,1,2,3]排列
+completedCount, revision: 0
+lastOperation, finishedAt, cooldownStartedAt, pendingId: null
+
+scores/{uid}
+nickname: 同私人玩家，之後不可改
+score: 0
+lastOperation: null
 ```
 
-選項排列為 `[0,1,2,3]` 的排列，代表畫面順序到原始選項索引的對應。規則在作答時驗證使用的排列。題目順序與選項 map 加入後不可變；前端須驗證題目 ID 合法、四單元各 10 題及每一個排列，不可把 rules 的結構檢查當成題庫驗證。
+questionOrder／choiceOrders 加入後不可改。SDK 驗證合法題目、四單元各10題及選項排列，規則作答時核對目前排列。暱稱等外部文字需安全呈現。
 
-已存在的玩家不可透過覆寫或重新加入來重置。暱稱請用 textContent 等安全方法呈現。rules 不限制全班最多只能加入 30 人，老師 UI 須管理課堂人數；快照固定最多 30 筆。
+分數只有公開 scores 是新版權威值，私人玩家不再存 score。學生可讀同房 scores 文件 ID、暱稱及分數，lastOperation 僅含一次性交易所需 actor ID 與題目 ID，不含答案。SDK 不再假設總分等於本人的答案分數總和。
 
-## 原子作答操作
+## 作答、冷凍與完成
 
-每次操作更新玩家時必須 `revision = 原值 + 1`，將 lastOperation 設成僅含 kind 與 id 的 map。用 transaction 讀原狀態後計算；固定讀取結果的 batch 可用於首次提交，衝突時應重新讀取，不可盲目重試累加。
+每次 own player 操作 revision +1，lastOperation 為 `{kind, id: questionId}`。kind 限 answer／open／claim／finish；revision 上限120對應40題最多各答題、開箱、結算。操作須為自己匿名身分、同房 v2、running 且未到期。
 
-### 答題
-
-同一 transaction／batch：
-
-1. 建立 `players/{uid}/answers/{questionId}`，不得覆寫既有答案。
-2. 更新玩家 completedCount +1、score +本題 awardedPoints、revision +1、lastOperation `{kind:'answer', id:questionId}`。
-
-答案必須包含且只能包含：
+answer 同交易建立不可變作答欄位，更新玩家 completedCount +1：
 
 ```text
-ordinal: completedCount 的下一題序號，1–40
-selectedChoice: 畫面選項索引，整數 0–3
+ordinal: 下一題序號1–40
+selectedChoice: 畫面索引0–3
 isCorrect: boolean
-explanationViewed: false
-awardedPoints: isCorrect ? 100 : 0
 answeredAt: serverTimestamp()
+explanationViewed: false
 explanationViewedAt: null
+awardedPoints: 0
+chest: null
 ```
 
-questionId 必須對應固定題序。第 40 題同時把玩家 finishedAt 設為 serverTimestamp，其餘題維持 null。eventCount 與其他不可變欄位不變。
+答對只設定 pendingId 為本題ID，不加分，cooldownStartedAt=null。答錯 pendingId=null、cooldownStartedAt=serverTimestamp，不加扣分。下一題須沒有 pendingId，且 request.time 已到 cooldownStartedAt +3秒；重新整理或第二分頁不能跳過。前端將 cooldownStartedAt 衍生為 cooldownUntil 顯示，詳解不加分且不要求讀完才能繼續。
 
-### 錯題詳解
+第40題答對須完成最後寶箱結算才設 finishedAt；第40題答錯滿3秒後，以 finish 操作保存 finishedAt=serverTimestamp，不能送出答案就算完成。若先逾時則只回顧已有進度，不補發效果。
 
-同 batch 更新既有錯題 explanationViewed false → true、explanationViewedAt 為 serverTimestamp、awardedPoints 為 20，玩家 score +20、revision +1、lastOperation `{kind:'explanation',id:questionId}`。其他欄位不變。正確題閱讀詳解不寫入領分操作。
+## 盲選寶箱與原子分數
 
-### 命運事件
-
-同 batch 建立 `players/{uid}/events/{eventIndex字串}` 與更新玩家：
+open 只能將本題正確答案的 chest 由 null 變成以下資料，並更新 own player revision／lastOperation：
 
 ```text
-eventIndex: 下一個未領取序號，整數 1–13
-awardedPoints: 整數 -30 至 +80
-createdAt: serverTimestamp()
+{box: 0..2, outcome: {kind, amount}, targetId: null,
+ settled: false, delta: 0, fallback: false}
 ```
 
-玩家必須完成至少 eventIndex ×3 題。玩家 eventCount +1、score 設為 `Math.max(0, oldScore + awardedPoints)`、revision +1、lastOperation `{kind:'event', id:String(eventIndex)}`。其餘欄位不變。
+箱子外觀相同，選後才顯示；重新整理、並發開箱以第一個已保存結果為準。結果由用戶端抽樣，機率集中在 `src/game/config.ts`，不是防作弊隨機服務。
 
-事件解鎖可以延後領取，規則保證每個序號最多一次，前端負責每三題展示事件。機率、事件名稱及跨玩家效果尚未定義，不能跨玩家寫分。玩家總分上限 5040，revision 上限 93，對應 40 題、最多 40 次錯題詳解與 13 次事件。
+| 類型  | 類別機率 | 類內數值機率                                 |
+| ----- | -------: | -------------------------------------------- |
+| gain  |      50% | +20：30%、+50：50%、+80：20%                 |
+| steal |      20% | amount=0，指定對方轉移 min(100,對方當下分數) |
+| swap  |      10% | amount=0，交換雙方當下分數                   |
+| loss  |      20% | -10：50%、-20：30%、-30：20%，最低0          |
 
-所有三種寫入都要求房間 running。暫停、結束或封存後仍可讀已保存資料，但不能作答、領詳解分或事件分。前端若正在讀未領分詳解，恢復後才能提交領分操作。
+claim 同 transaction 必須更新：
+
+1. 原未結算 chest 改為 settled=true，box／outcome 不變，保存 targetId、delta 與 fallback。
+2. own player 清除 pendingId、revision +1、lastOperation=claim；最後一題同時完成。
+3. own scores 改為精確計算結果，lastOperation=`{actor: 發動者UID, id: questionId}`。
+4. 指定目標時也更新目標 scores，使用同一 lastOperation，依提交時兩人現值計算。
+
+目標限同房其他已加入玩家，已答完或離線玩家仍可選。只有 playerCount=1 時，steal／swap 可 targetId=null 且 fallback=true 改領20分；其他玩家零分不觸發替代獎勵。gain／loss 不可帶目標。搶分及互換保持雙方總分，不得只寫一方、自己當目標或跨房間操作。分數範圍0–96000，依30人×40題×最多80分產生量推導。
+
+規則在 actor player 寫入集中驗證整個 claim 的數值、不可變結果、雙方公開分數及一次性進度。答案及分數 companion 文件要求同交易 actor revision +1 的配對操作，不重複執行整套計算，避免 Firestore 1000-expression 限制；不能只改 lastOperation 或利用舊 claim 重播。SDK 交易衝突重新讀取雙方現值，不盲目重送加分。
+
+舊每三題命運事件與詳解加分寫入入口不再開放。舊資料保留原值供 owner／本人讀取，無破壞性遷移。
 
 ## 排名快照
 
@@ -119,12 +135,12 @@ entries: 每份最多 15 筆 [{ nickname: string, score: 非負整數 }]
 
 學生分別使用 onSnapshot 監聽兩份快照。rules 透過 getAfter 要求兩份 updatedAt 都等於本次 request.time，禁止只更新一份。兩個 listener 仍可能先後回呼，前端必須暫存到兩份時間相同才合併顯示，不可混合不同版本。不能列舉任意 public 文件，僅開放上述兩個固定 ID 的 get。
 
-老師監聽自己房間的玩家，僅在資料有變更時最多每 10 秒寫一次快照。用戶端以交易讀取已發布的時間與內容，協調不同分頁，rules 不強制時間間隔。結束或封存時例外補發最終排名，先凍結房間再讀取完整玩家；週期發布也讀取房間狀態以避免舊排名覆蓋最終結果。老師離線時標示最後更新時間，不宣稱排名仍即時。估算 30 人、30 分鐘、31 個排行讀取端、每 10 秒兩份快照約 11,160 次讀取，加老師玩家監聽約 1,620 次，合計約 12,780；初始載入、詳解更新、重連及 rules 相依讀取另計。
+老師監聽自己房間的玩家，僅在資料有變更時最多每 10 秒寫一次快照。用戶端以交易讀取已發布的時間與內容，協調不同分頁，rules 不強制時間間隔。結束或封存時例外補發最終排名，先凍結房間再讀取完整玩家；週期發布也讀取房間狀態以避免舊排名覆蓋最終結果。老師離線時標示最後更新時間，不宣稱排名仍即時。
 
-`scripts/generate-leaderboard-validation.mjs` 產生每份至多 15 筆的長度短路驗證，不依賴規則不支援的迴圈。`npm run rules:check` 驗證產物一致。需要診斷時可設定 `RULES_COVERAGE_PATH`，Emulator 測試會輸出官方 ruleCoverage JSON，不影響正式資料。
+`scripts/generate-leaderboard-validation.mjs` 產生每份至多 15 筆的長度短路驗證，`npm run rules:check` 驗證產物一致。需要診斷時可設定 `RULES_COVERAGE_PATH`，Emulator 測試會輸出官方 ruleCoverage JSON。
 
 ## 限制與刪除
 
-rules 核對精確計分差、操作次序及原子寫入，不能驗證用戶端的 isCorrect、隨機結果或人是否真的看過詳解；答案隨前端發送亦可被檢視。這是形成性課堂遊戲，不是可信任考試系統。
+rules 核對操作次序、分數差及原子寫入，不能證明用戶端 isCorrect 或抽樣結果誠實；答案隨 bundle 發送仍可被檢視。這是課堂練習遊戲，不是防作弊考試。
 
-規則拒絕客戶端所有刪除，避免只有 room 被刪而遺留子集合。待完整清理工具及測試完成後，再開放老師的安全刪除流程。尚未達成 SPEC 的手動刪除驗收；無 TTL。rules 使用 get／getAfter 的相依文件讀取也會影響用量，Emulator 測試不代表正式帳單估算或 30 台裝置壓測。
+客戶端禁止所有刪除。完整巢狀清理、TTL及30天保留政策仍未實作。get／getAfter 相依讀取與新增公開 scores 監聽會增加用量，舊快照估算不適用完整寶箱流程。Emulator 不驗證部署規則、IAM、Google OAuth、正式資料或30台負載。
