@@ -23,7 +23,7 @@ async function client(teacher = false, email = 'teacher@example.test') {
   const result = teacher ? await signInWithCredential(auth, GoogleAuthProvider.credential(JSON.stringify({
     sub: email, email, email_verified: true,
   }))) : await signInAnonymously(auth);
-  return { db, uid: result.user.uid, classroom: new Classroom(db, result.user.uid) };
+  return { db, user: result.user, uid: result.user.uid, classroom: new Classroom(db, result.user) };
 }
 beforeAll(async () => {
   env = await initializeTestEnvironment({ projectId: project, firestore: { host: '127.0.0.1', port: 8080,
@@ -36,23 +36,70 @@ afterAll(async () => {
 });
 
 describe('real classroom adapter against Auth, Firestore and rules', () => {
-  it('admin authorization is dry-run by default, rejects missing users, and applies idempotently', async () => {
-    const teacher = await client(true, 'provision@example.test');
-    const args = ['scripts/authorize-teachers.mjs', '--emulator', '--project', project, '--email', 'provision@example.test'];
+  it('admin grants email before first login, dry-runs and applies idempotently', async () => {
+    const args = ['scripts/authorize-teachers.mjs', '--emulator', '--project', project, '--email', ' Prelogin@Example.Test '];
     const run = promisify(execFile);
     await run(process.execPath, args);
+    const teacher = await client(true, 'prelogin@example.test');
     expect(await teacher.classroom.isTeacher()).toBe(false);
     await run(process.execPath, [...args, '--apply']);
     expect(await teacher.classroom.isTeacher()).toBe(true);
     await run(process.execPath, [...args, '--apply']);
     expect(await teacher.classroom.isTeacher()).toBe(true);
-    await expect(run(process.execPath, [...args.slice(0, -1), 'missing@example.test'])).rejects.toMatchObject({ code: 2 });
+    await run(process.execPath, [...args.slice(0, -1), 'future@example.test', '--apply']);
+    expect(await (await client(true, 'future@example.test')).classroom.isTeacher()).toBe(true);
+  });
+  it('environment sync handles pagination, revocation, dry-run, invalid inputs and explicit empty arrays', async () => {
+    const run = promisify(execFile);
+    const args = ['scripts/authorize-teachers.mjs', '--emulator', '--project', project, '--sync-env'];
+    const sync = (emails: string[], apply = true) => run(process.execPath, apply ? [...args, '--apply'] : args,
+      { env: { ...process.env, TEACHER_EMAILS: JSON.stringify(emails) } });
+    const emails = Array.from({ length: 60 }, (_, n) => `bulk${n}@example.test`);
+    await sync(emails);
+    const teacher = await client(true, emails[0]);
+    expect(await teacher.classroom.isTeacher()).toBe(true);
+    await sync(['kept@example.test'], false);
+    expect(await teacher.classroom.isTeacher()).toBe(true);
+    for (const value of ['', '["bad"]', '[1]']) {
+      await expect(run(process.execPath, [...args, '--apply'], { env: { ...process.env, TEACHER_EMAILS: value } })).rejects.toMatchObject({ code: 1 });
+      expect(await teacher.classroom.isTeacher()).toBe(true);
+    }
+    await sync(['Kept@Example.Test']);
+    expect(await teacher.classroom.isTeacher()).toBe(false);
+    const kept = await client(true, 'kept@example.test');
+    expect(await kept.classroom.isTeacher()).toBe(true);
+    const repeated = await sync(['kept@example.test']);
+    expect(repeated.stdout).toContain('0 email grant(s), 0 removal(s)');
+    await env.withSecurityRulesDisabled(async context => {
+      expect((await context.firestore().collection('teacherEmails').get()).size).toBe(1);
+      await context.firestore().doc('teachers/old-uid').set({ authorized: true });
+    });
+    await env.withSecurityRulesDisabled(async context => {
+      const batch = context.firestore().batch();
+      for (let i = 0; i < 100; i++) batch.set(context.firestore().doc(`teacherEmails/overflow${i}@example.test`), { authorized: true });
+      await batch.commit();
+    });
+    await expect(sync([])).rejects.toMatchObject({ code: 1 });
+    expect(await kept.classroom.isTeacher()).toBe(true);
+    await env.withSecurityRulesDisabled(async context => {
+      const documents = await context.firestore().collection('teacherEmails').get();
+      expect(documents.size).toBe(101);
+      const batch = context.firestore().batch();
+      for (const document of documents.docs) if (document.id !== 'kept@example.test') batch.delete(document.ref);
+      await batch.commit();
+    });
+    await sync([]);
+    expect(await kept.classroom.isTeacher()).toBe(false);
+    await env.withSecurityRulesDisabled(async context => {
+      expect((await context.firestore().collection('teacherEmails').get()).size).toBe(0);
+      expect((await context.firestore().doc('teachers/old-uid').get()).exists).toBe(true);
+    });
   });
   it('runs join, concurrent answer/explanation, recovery, ranking and lifecycle without private leaks', async () => {
     const teacher = await client(true), student = await client(), other = await client();
     await expect(teacher.classroom.createRoom()).rejects.toThrow();
     await env.withSecurityRulesDisabled(async context => {
-      await context.firestore().doc(`teachers/${teacher.uid}`).set({ authorized: true });
+      await context.firestore().doc('teacherEmails/teacher@example.test').set({ authorized: true });
     });
     const room = await teacher.classroom.createRoom();
     expect(room.status).toBe('lobby');
@@ -106,7 +153,7 @@ describe('real classroom adapter against Auth, Firestore and rules', () => {
     const low = [{ ...player, totalScore: 100 }], high = [{ ...player, totalScore: 200 }];
     const attempts = await Promise.all([
       teacher.classroom.publishLeaderboard(room.id, low),
-      new Classroom(teacher.db, teacher.uid).publishLeaderboard(room.id, high),
+      new Classroom(teacher.db, teacher.user).publishLeaderboard(room.id, high),
     ]);
     expect(attempts.filter(Boolean)).toHaveLength(1);
     const reference = doc(teacher.db, `rooms/${room.id}/public/leaderboard`);

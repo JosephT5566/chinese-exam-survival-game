@@ -31,17 +31,38 @@ VITE_FIREBASE_PROJECT_ID=demo-chinese-exam
 
 ## 老師授權
 
-Google 登入不等於老師權限。正式老師先登入一次，在等待授權頁取得 UID；管理員使用既有 `gcloud` 登入環境執行下列工具。它只查指定 email，確認已有啟用且 email 驗證的 Google-provider 使用者，預設不寫入任何資料。
+Google 登入不等於老師權限。老師資格以已驗證 Google email 比對 Firestore 的 `teacherEmails/{小寫email}.authorized == true`，不再比對 `teachers/{uid}`。管理員可以先加入 email，老師第一次登入即可使用。教室擁有者與學生身分仍用 UID，不重建既有教室資料；同一 email 換成另一個 UID 不會繼承舊教室。
+
+### 透過 GitHub vars 管理
+
+在 repository Settings → Secrets and variables → Actions → Variables 新增 `TEACHER_EMAILS`，值是 JSON array：
+
+```json
+["teacher1@example.com", "teacher2@example.com"]
+```
+
+最多 100 個地址，去除前後空白並轉為小寫；不合併 Gmail 的點號或 `+` 別名。這是完整名單，部署會撤銷不在陣列內的 email 授權。缺少、空字串或無效值會停止部署，不寫入；只有明確的 `[]` 才會撤銷所有 email 授權。名單不放入 `VITE_*` 或網站 bundle，但 repository vars 不是 secret，擁有相應 repository 權限的人可查看。
+
+變更 vars 不會自動觸發 workflow，需在 Actions 對 `main` 執行 Run workflow，或隨下次 main 更新部署。首次啟用前，管理員需依 [Hosting 部署設定](docs/hosting-auto-deploy.md)補足部署帳號權限，並把所有既有老師 email 列入 vars。不要將實際老師名單貼到公開 Issue／PR。
+
+### 管理員手動授權
+
+在專案目錄使用已登入的 `gcloud` 管理員身分執行，不需老師先登入，不需 Firebase Auth 查詢權限：
 
 ```sh
+# 預覽，不寫入
 node scripts/authorize-teachers.mjs --project chinese-exam-survival-game --email teacher@example.com
-# 確認結果後，加入 --apply。重跑只更新同一份 teachers/{uid}.authorized，並讀回確認。
+# 確認後授權；保留其他 email 授權
 node scripts/authorize-teachers.mjs --project chinese-exam-survival-game --email teacher@example.com --apply
 ```
 
-可重複傳 `--email`，最多 10 位。未登入或條件不符者不會授權，exit code 為 2；工具失敗為 1。管理員需 Firebase Auth 查詢與 Firestore 寫入 IAM 權限，前端不能自授權。撤銷權限由管理員將該文件的 `authorized` 設為 false。
+`--email` 可重複指定，最多 10 位；整個 collection 上限為 100 份文件。工具只輸出變更數量，不輸出 email 名單或憑證。預設 dry-run，`--apply` 才寫入。需要 Firestore 讀寫與 transaction IAM 權限，客戶端不能自授權。
 
-Emulator 測試加上 `--emulator` 並使用 `--project demo-chinese-exam`，工具不會取得正式憑證。不要將管理員 token、service account 私鑰或學生資料放入程式庫。
+也可由管理員在 Firebase Console 建立 `teacherEmails` collection，以小寫 email 作為文件 ID，新增 Boolean 欄位 `authorized: true`。撤銷可刪除該 email 文件或改為 false。已登入老師會收到授權變更；正式 rules 的變更傳播與 token 更新並非瞬時。
+
+手動變更也要同步更新 GitHub vars，否則下次部署將以 vars 覆蓋名單。管理工具可用環境中的 `TEACHER_EMAILS` 加 `--sync-env` 預覽完整同步，加 `--apply` 套用；`--validate-env` 僅離線驗證格式，不取得憑證或存取資料。
+
+Emulator 測試加 `--emulator` 並使用 `--project demo-chinese-exam`。這時只存取本機 Firestore，不取得正式憑證。不要將管理員 token、service account 私鑰或學生資料放入程式庫。
 
 ## 驗證
 
@@ -59,7 +80,7 @@ npm run test:browser
 
 `.env.production` 刻意追蹤四個公開 Firebase Web SDK 設定，讓 CI build 能接上正確專案；這些值會進入瀏覽器，權限由 Firestore rules 決定。`.env.local` 仍不追蹤，且本機值優先。正式專案為 `chinese-exam-survival-game`，狀態見 [設定紀錄](docs/firebase-setup.md)。
 
-GitHub Actions 在 PR 執行所有檢查；合併或 push 至 `main` 後才自動部署 Hosting，使用 OIDC 短效憑證。開 PR 不會部署，也不會發布 rules、建立老師授權或更改計費。[部署設定](docs/hosting-auto-deploy.md)說明重跑與停用方式。
+GitHub Actions 在 PR 執行所有檢查；合併或 push 至 `main` 後，使用 OIDC 短效憑證同步老師 email 白名單、發布 Firestore rules，再部署 Hosting。開 PR 不會操作正式資料或發布，也不會更改計費。[部署設定](docs/hosting-auto-deploy.md)說明重跑與停用方式。
 
 手動發布需有授權並確認本機 `.env.local` 未蓋過正式設定：
 
@@ -69,7 +90,7 @@ npm run check
 npx firebase deploy --only hosting --project chinese-exam-survival-game
 ```
 
-發布後網站為 https://chinese-exam-survival-game.web.app 。Hosting rollback 不會回復 Firestore 資料或 rules。
+發布後網站為 https://chinese-exam-survival-game.web.app 。手動 `--only hosting` 不會同步白名單或發布 rules。Hosting rollback 不會回復 Firestore 資料或 rules。
 
 ## 限制與課堂驗收
 

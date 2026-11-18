@@ -4,7 +4,7 @@
 
 國文段考生存戰：命運大富翁 is a Traditional Chinese classroom practice game for Taiwan ninth-grade students, targeting 30 tablets, 40 questions, and 20–30 minutes. It uses Vite, vanilla TypeScript, Firebase Auth, Firestore, and Firebase Hosting. Product intent lives in [SPEC.md](SPEC.md); current behavior and limitations live in [README.md](README.md).
 
-- Preserve teacher Google login plus administrator authorization, anonymous student identity, private answers, and separate teacher/student Auth storage. Google login alone does not grant teacher access; clients cannot self-authorize.
+- Preserve verified teacher Google login plus the administrator-managed `teacherEmails/{lowercase-email}` authorization, anonymous student identity, private answers, and separate teacher/student Auth storage. Google login alone does not grant teacher access; clients cannot self-authorize.
 - Trace cloud mutations through `src/firebase/classroom.ts`, models, and `firestore.rules`. Preserve transaction and duplicate-reward behavior, classroom lifecycle, and leaderboard publication.
 - Preserve local demo mode (`?demo=1`) and its separation from cloud data. Emulator work uses `demo-chinese-exam`, never the production project.
 - Preserve Traditional Chinese copy, tablet touch interactions, and pixel-art conventions.
@@ -37,6 +37,7 @@ Read relevant context before changing code. Current source and fresh checks take
 - UI layout, visual design, copy hierarchy, or interaction changes need an owner-selected design. Use [ui-design-gate](.agents/skills/ui-design-gate/SKILL.md).
 - Use one branch per issue, `codex/issue-<number>-<slug>`, preferably in a separate worktree. Run at most two issues in parallel, only when files do not overlap.
 - Open a PR referencing the issue using [implement-from-issue](.agents/skills/implement-from-issue/SKILL.md). Run [review-pr](.agents/skills/review-pr/SKILL.md) in a session that did not write the code.
+- Main deployment reconciles `TEACHER_EMAILS` from GitHub vars into Firestore, publishes rules, then Hosting. Missing/malformed configuration stops deployment; explicit `[]` revokes all email grants. Never put this list in `VITE_*`.
 - Owner approval is required before merging changes to Firestore rules/indexes/data contracts, auth or teacher authorization, scoring/rewards, classroom lifecycle/leaderboard, `VITE_FIREBASE_*` environment handling, `.github/workflows/`, and Hosting/IAM/deployment configuration.
 - Agents never merge. The owner merges after required checks pass. Merging to `main` can trigger existing Hosting auto-deployment.
 - Record decisions in the issue or PR. A failed session leaves its branch and a short status comment. Stage prompts and status conventions live in [docs/agent-workflow.md](docs/agent-workflow.md).

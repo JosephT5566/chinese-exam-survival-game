@@ -8,5 +8,5 @@
 擁有者查詢與私人／公開訂閱。UI 在 `src/app/cloud.ts`，本機示範在
 `src/app/demo.ts`，不與正式資料混用。
 
-Firestore rules 與精確欄位見 `docs/firestore-contract.md`。Google 登入後仍需
-管理員建立 `teachers/{uid}` 授權。工具與 Emulator 操作見根目錄 README。
+Firestore rules 與精確欄位見 `docs/firestore-contract.md`。
+管理員可在老師首次登入前建立 `teacherEmails/{小寫email}`，內容為 `authorized: true`。rules 驗證 Google provider 與已驗證的 token email；教室所有權仍使用 UID。部署由 GitHub vars 的 `TEACHER_EMAILS` 完整同步，手動工具與 Emulator 操作見根目錄 README。

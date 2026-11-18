@@ -1,15 +1,28 @@
 # Firestore 用戶端資料契約
 
-本文件對應 `firestore.rules`，已於 2026-11-18 發布至 `chinese-exam-survival-game` 並讀回比對一致。已核准方案為老師約每 10 秒發布公開排名快照；學生自己的分數立即更新。快照以兩份原子更新的文件承載，前端串接見 `src/firebase/classroom.ts` 與 `src/app/cloud.ts`。
+本文件對應 repository 的 `firestore.rules`。先前 UID 白名單版本曾於 2026-11-18 發布並讀回核對；本次 email 白名單版本尚未在此工作中發布或讀回驗證。已核准方案為老師約每 10 秒發布公開排名快照；學生自己的分數立即更新。快照以兩份原子更新的文件承載，前端串接見 `src/firebase/classroom.ts` 與 `src/app/cloud.ts`。
 
 ## 身分與查詢
 
-- 學生用 Anonymous Auth。老師用 Google Auth，且管理員必須另外建立 `teachers/{uid}`，內容包含 `authorized: true`。客戶端不能寫入 allowlist。
-- 老師可讀取自己的授權文件。未授權帳號回傳 permission-denied，不代表可自行建立該文件。
+- 學生用 Anonymous Auth。老師必須以 Google provider 登入，token 的 `email_verified` 為 true，且以 token email 小寫查得 `teacherEmails/{email}.authorized == true`。未驗證或其他 provider 即使 email 相同也不得授權。客戶端不能寫入 allowlist。
+- 已驗證 Google 帳號只可精確讀取自己 email 的授權文件，即使尚未授權也可讀取不存在／已撤銷狀態；不得列舉名單或讀取其他 email。資料存取另由 teacher() 檢查 authorized，能讀自己的授權狀態不代表具有老師資格。
 - 老師查房間時必須加 `where('ownerUid', '==', auth.currentUser.uid)`，不能列舉全站房間。
 - 學生以完整 6 位大寫英數碼 get `roomCodes/{code}`，得到 roomId，再建立自己的 membership。不可列舉加入碼。這不是防暴力猜碼機制。
 - 學生加入後可讀房間、自己的玩家、答案、事件，以及 `public/leaderboard`。不能讀其他玩家文件，連暱稱與分數也須從快照取得。
 - 老師只能讀自己房間的全部玩家、答案與事件，不能改寫學生私人資料或分數。可信任管理員 SDK 依 IAM 存取，不受這些 rules 限制。
+
+## 老師白名單與切換
+
+```text
+teacherEmails/{email 小寫}
+  authorized: true
+```
+
+管理工具與 client/rules 使用小寫地址，不把 Gmail 點號或 plus 別名視為相同地址。老師可以在首次登入前被授權。email 改名或被組織重新配發會影響資格；房間 `ownerUid` 仍不可變，不會隨 email 轉移。
+
+舊 `teachers/{uid}` 文件不再參與授權，新 rules 對該路徑沒有 client 讀寫權限。切換只新增 email collection，無需重建 rooms、players 或答案；舊文件不由工具刪除。部署同步以 `TEACHER_EMAILS` 為完整名單，在同一 Firestore transaction 中以每頁 50 筆查詢全部現有文件，再原子新增／恢復指定 email、刪除其餘文件。現有或目標名單超過 100 份則拒絕寫入；衝突或失敗不做部分提交，可重新執行。手動 `--email` 模式只新增／恢復指定 email，不移除其他 email。
+
+管理端 IAM 寫入不受 client rules 約束。部署身份取得資料庫層級 Firestore 權限，並非僅能操作這個 collection；詳見 [部署設定](hosting-auto-deploy.md)。
 
 ## 建立房間與加入
 

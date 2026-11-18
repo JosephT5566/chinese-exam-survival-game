@@ -1,4 +1,5 @@
 import { FirebaseError } from 'firebase/app';
+import type { User } from 'firebase/auth';
 import {
   collection, doc, getDocFromServer, getDocsFromServer, onSnapshot, query, where,
   runTransaction, serverTimestamp, setDoc, writeBatch, type Firestore,
@@ -24,9 +25,15 @@ export function cloudError(error: unknown): string {
   return error instanceof Error ? error.message : '無法完成操作，請稍後重試。';
 }
 export class Classroom {
-  constructor(readonly db: Firestore, readonly uid: string) {}
+  readonly uid: string;
+  private readonly teacherEmail: string | null;
+  constructor(readonly db: Firestore, identity: Pick<User, 'uid' | 'email'>) {
+    this.uid = identity.uid;
+    this.teacherEmail = identity.email?.toLowerCase() ?? null;
+  }
   async isTeacher(): Promise<boolean> {
-    try { return (await getDocFromServer(doc(this.db, 'teachers', this.uid))).data()?.authorized === true; }
+    if (!this.teacherEmail) return false;
+    try { return (await getDocFromServer(doc(this.db, 'teacherEmails', this.teacherEmail))).data()?.authorized === true; }
     catch (error) {
       if (error instanceof FirebaseError && error.code === 'permission-denied') return false;
       throw error;
@@ -195,7 +202,8 @@ export class Classroom {
     });
   }
   watchAuthorization(next: (allowed: boolean) => void, error: (e: unknown) => void) {
-    return onSnapshot(doc(this.db, 'teachers', this.uid), { includeMetadataChanges: true }, snapshot => {
+    if (!this.teacherEmail) { next(false); return () => {}; }
+    return onSnapshot(doc(this.db, 'teacherEmails', this.teacherEmail), { includeMetadataChanges: true }, snapshot => {
       if (snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) return;
       next(snapshot.data()?.authorized === true);
     }, error);
