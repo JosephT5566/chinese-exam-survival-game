@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+.firebase/
+.firebaserc
+.env
+.env.*
+!.env.example
+*-debug.log
+*-debug.*.log
+*.tsbuildinfo
+.DS_Store
+.vscode/
+.idea/
+emulator-data/
+*service-account*.json
+*serviceAccount*.json

@@ -1,0 +1,13 @@
+:root {
+  font-family: system-ui, "Noto Sans TC", sans-serif;
+  color: #203c36;
+  background: #f6f3e9;
+  line-height: 1.8;
+  font-synthesis: none;
+}
+body { margin: 0; }
+main { max-width: 48rem; padding: clamp(1.5rem, 5vw, 4rem); margin: 5vh auto; }
+h1 { font-size: clamp(2rem, 6vw, 3.5rem); line-height: 1.35; }
+h2 { font-size: 1.5rem; }
+p { font-size: 1.125rem; }
+hr { border: 0; border-top: 2px solid #c5cdc0; margin-block: 2.5rem; }
