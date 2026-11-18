@@ -1,7 +1,7 @@
 # 國文段考生存戰：命運大富翁 — Product & Engineering Specification
 
 > Status: Core classroom/gameplay decisions confirmed; secondary product decisions pending / Codex handoff  
-> Version: 0.3 — 2026-11-18  
+> Version: 0.4 — 2026-11-18
 > Language: Traditional Chinese (zh-TW)  
 > Deployment target: Firebase Hosting  
 > IMPORTANT: Open decisions are explicitly marked `[待確認]`. Do not silently assume them.
@@ -319,15 +319,19 @@ teachers/{teacherUid}
 9. **Leaderboard visibility: DECIDED.** Students and teacher can see **all 30 players' rankings**. Design for readable tablet display and cost-efficient updates; do not revert to top 10.
 10. **Retention: DECIDED.** Teacher manually deletes room data; recommend cleanup within 30 days. No automatic deletion requirement in MVP; deletion must include nested data.
 
+### Confirmed during Firestore rules design (2026-11-18)
+
+- **Leaderboard synchronization: DECIDED.** Teacher aggregates changed player data at most every 10 seconds; students listen to the public snapshot and see all 30 players. Teacher must stay online; display the last update time. Personal score/progress remain immediate. Implementation uses two atomically updated documents of up to 15 entries each to stay within rules evaluation limits; frontend combines only matching timestamps and derives ranks from ordered nickname/score entries.
+- **Student join format: DECIDED.** Six uppercase alphanumeric characters for room codes, nickname length 2–12 characters.
+- **Late join: DECIDED.** New participants may join only while the room is in lobby. Existing participants can restore their saved state afterward.
+- **Pause behavior: DECIDED.** Pause blocks new answer submissions, explanation rewards and luck claims. Existing submitted explanations remain readable; pending rewards can be submitted after resume.
+
 ### Pending — secondary decisions only; defaults are proposals, not approvals
 
 | Priority | Topic | Proposed default | Why it matters |
 |---|---|---|---|
-| P1 | Pause behavior | Proposed: teacher pause blocks new submissions; students resume from saved progress | Classroom control |
 | P1 | Results export | Teacher CSV export in v1 | Teacher workflow, privacy |
 | P1 | Room scope | One teacher and one active room for MVP; design schema to allow future rooms | Complexity |
-| P1 | Student join | 6-character room code and QR/deep link; nickname length 2–12 chars | Classroom UX |
-| P1 | Leaderboard strategy | Compare full-30 leaderboard listener vs other cost-controlled full-30 designs; calculate 30-client read costs before implementation | Free quota risk |
 | P2 | Music / sound effects | Muted by default; original/license-cleared only | Accessibility, licensing |
 
 ### Implementation clarification: Firestore cost and trust model
@@ -340,7 +344,7 @@ teachers/{teacherUid}
 ## 14. Immediate Next Action for Codex
 
 1. Request the existing project/repository or ZIP and Firebase Web SDK `firebaseConfig` if not yet supplied; never request service-account private keys.
-2. **Do not re-ask any of the ten confirmed decisions.** Ask only about unresolved secondary decisions: CSV export, pause behavior, room scope, join code/nickname rules, leaderboard synchronization architecture, luck-event distribution/effects, and audio.
+2. **Do not re-ask confirmed decisions in §13, including the Firestore rules design additions.** Remaining secondary decisions include CSV export, room scope, luck-event distribution/effects, and audio.
 3. Inspect the existing prototype, report current implementation vs requirements, and produce an incremental plan with Firestore rule tests and estimated per-session read/write costs.
 4. Implement independent scaffolding and tests while waiting for remaining choices. Require explicit approval before deployment, changing live security rules, or enabling any paid service.
 5. Do not claim real-time sync, secure teacher authorization, or Hosting deployment is complete until tested and verified.
