@@ -1,7 +1,12 @@
 import "./style.css";
+import "./rewards.css";
+import { sharePanel, mountShare } from "./share";
+import { remainingTime } from "../game/rewards";
 import { sections, questions } from "../questions/bank";
-import { answer, explain, score, type Player } from "../game/session";
+import { answer, explain, score, openChest, claimChest, nextQuestion, type Player } from "../game/session";
 import {
+  setDuration,
+  setStatus,
   demoCode,
   join,
   publish,
@@ -14,6 +19,7 @@ import { paintLandscape } from "./landscape";
 import { icon } from "./art";
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
+mountShare(root);
 const params = new URLSearchParams(location.search);
 const initialCode = (params.get("room") ?? "").toUpperCase();
 let code = /^[A-Z0-9]{6}$/.test(initialCode) ? initialCode : demoCode;
@@ -108,6 +114,10 @@ function ranks(room: Room) {
       : '<p class="empty">等待老師發布第一份玩家排名。</p>'
   }</section>`;
 }
+function timer(room: Room) {
+  const seconds = Math.ceil(remainingTime(room) / 1000);
+  return `<span class="timer" role="timer" aria-label="剩餘時間">剩餘 ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}</span>`;
+}
 function teacherPage(room: Room) {
   const statuses: Partial<Record<Status, [string, string]>> = {
     lobby: ["running", "開始闖關"],
@@ -115,12 +125,12 @@ function teacherPage(room: Room) {
     paused: ["running", "恢復作答"],
   };
   const next = statuses[room.status];
-  return `<div class="section-head"><div><p class="eyebrow">本機教室管理</p><h1>老師控制台</h1></div><span class="tag">${statusLabels[room.status]}</span></div><div class="dashboard"><section class="panel"><h2>教室狀態</h2><p class="muted">同一瀏覽器的分頁可共同使用此房間。</p><div class="stats"><div><small>房間碼</small><strong>${room.code}</strong></div><div><small>已加入</small><strong>${room.players.length} / 30</strong></div></div><div class="actions">${next ? button(next[0], next[1]) : button("new", "建立新示範房間")}${room.status !== "ended" ? button("end", "結束活動", "secondary") : ""}<a class="text-link" href="${html(url("student"))}">回學生畫面 →</a>${room.status === "lobby" ? '<a class="text-link" target="_blank" rel="noopener" href="' + html(url("student") + "&guest=1") + '">新增示範玩家 ↗</a>' : ""}</div></section>${ranks(room)}</div><section class="panel"><h2>玩家進度</h2>${room.players.length ? '<ul class="rank-list">' + room.players.map((p) => "<li><span>" + html(p.nickname) + "</span><strong>" + Object.keys(p.answers).length + " / 40 題</strong><small>" + (p.finishedAt ? "已完成" : "進行中") + "</small></li>").join("") + "</ul>" : '<p class="empty">還沒有玩家。先從學生畫面加入，再由老師開始。</p>'}</section>`;
+  return `<div class="section-head"><div><p class="eyebrow">本機教室管理</p><h1>老師控制台</h1></div><span class="tag">${statusLabels[room.status]}</span></div><div class="dashboard"><section class="panel"><h2>教室狀態</h2><p class="muted">同一瀏覽器的分頁可共同使用此房間。</p><div class="stats"><div><small>房間碼</small><strong>${room.code}</strong></div><div><small>已加入</small><strong>${room.players.length} / 30</strong></div></div>${timer(room)}${room.status === "lobby" ? `<div class="duration-control"><label for="duration">活動時間（1–60 分鐘）</label><input id="duration" type="number" min="1" max="60" value="${room.durationMinutes}">${button("duration", "設定時間", "secondary")}</div>` : ""}${sharePanel(url("student"), true)}<div class="actions">${next ? button(next[0], next[1]) : button("new", "建立新示範房間")}${room.status !== "ended" ? button("end", "結束活動", "secondary") : ""}<a class="text-link" href="${html(url("student"))}">回學生畫面 →</a>${room.status === "lobby" ? '<a class="text-link" target="_blank" rel="noopener" href="' + html(url("student") + "&guest=1") + '">新增示範玩家 ↗</a>' : ""}</div></section>${ranks(room)}</div><section class="panel"><h2>玩家進度</h2>${room.players.length ? '<ul class="rank-list">' + room.players.map((p) => "<li><span>" + html(p.nickname) + "</span><strong>" + Object.keys(p.answers).length + " / 40 題</strong><small>" + (p.finishedAt ? "已完成" : "進行中") + "</small></li>").join("") + "</ul>" : '<p class="empty">還沒有玩家。先從學生畫面加入，再由老師開始。</p>'}</section>`;
 }
 function summary(p: Player) {
   const entries = Object.entries(p.answers),
     wrong = entries.filter(([, a]) => !a.correct);
-  return `<section class="panel result"><div class="mini-icon">${icon("trophy")}</div><h2>冒險結算</h2><div class="stats"><div><small>最終得分</small><strong>${score(p)}</strong></div><div><small>完成題數</small><strong>${entries.length} / 40</strong></div><div><small>答對</small><strong>${entries.length - wrong.length} 題</strong></div></div>${wrong.some(([, a]) => !a.viewed) ? "<p>活動已結束，仍可閱讀詳解。結束後閱讀不再加分。</p>" : ""}<h3>錯題回顧</h3>${
+  return `<section class="panel result"><div class="mini-icon">${icon("trophy")}</div><h2>冒險結算</h2><div class="stats"><div><small>最終得分</small><strong>${score(p)}</strong></div><div><small>完成題數</small><strong>${entries.length} / 40</strong></div><div><small>答對</small><strong>${entries.length - wrong.length} 題</strong></div></div>${wrong.some(([, a]) => !a.viewed) ? "<p>活動已結束，仍可閱讀詳解。閱讀詳解不加分。</p>" : ""}<h3>錯題回顧</h3>${
     wrong.length
       ? wrong
           .map(([id, a]) => {
@@ -137,21 +147,30 @@ function pausedReview(p: Player) {
   const a = p.answers[id],
     q = questions.get(id);
   if (!a || !q) return "";
-  return `<div class="paused-review"><p class="eyebrow">已保存的作答</p><h3>${html(q.stem)}</h3><p>你的答案：${html(q.choices[p.choices[id]![a.selected]!]!)}</p><p><b>正解：${html(q.choices[q.correctChoiceIndex])}</b></p><details ${a.viewed ? "open" : ""}><summary>閱讀詳解</summary><p>${html(q.explanation)}</p></details>${!a.correct && !a.viewed ? '<p class="footnote">恢復作答後，可在題目下方領取詳解的 20 分。</p>' : ""}</div>`;
+  return `<div class="paused-review"><p class="eyebrow">已保存的作答</p><h3>${html(q.stem)}</h3><p>你的答案：${html(q.choices[p.choices[id]![a.selected]!]!)}</p><p><b>正解：${html(q.choices[q.correctChoiceIndex])}</b></p><details ${a.viewed ? "open" : ""}><summary>閱讀詳解</summary><p>${html(q.explanation)}</p></details></div>`;
+}
+function chestPanel(room: Room, p: Player, id: string) {
+  const chest = p.answers[id]?.chest;
+  if (!chest) return `<div class="chest-grid" aria-label="選擇命運寶箱">${[0, 1, 2].map((box) => `<button type="button" class="chest-box" data-action="open-${box}"><span class="chest-pixel" aria-hidden="true"></span>寶箱 ${box + 1}</button>`).join("")}</div>`;
+  const outcome = chest.outcome;
+  const label = outcome.kind === "gain" ? `獲得 ${outcome.amount} 分` : outcome.kind === "loss" ? `扣除 ${outcome.amount} 分（最低 0 分）` : outcome.kind === "steal" ? "偷取一位同學最多 100 分" : "和一位同學交換分數";
+  const peers = room.players.filter((other) => other.id !== p.id);
+  const needsTarget = outcome.kind === "steal" || outcome.kind === "swap";
+  return `<div class="chest-result" role="status"><strong>寶箱 ${chest.box + 1}：${label}</strong>${chest.settled ? `<p>${chest.fallback ? "目前沒有其他玩家，改獲得 20 分。" : "已結算"} 本次 ${chest.delta >= 0 ? "+" : ""}${chest.delta} 分</p>` : needsTarget && peers.length ? `<p>選擇對象，確認後立即結算。</p><div class="target-list">${peers.map((other) => button("target-" + other.id, `${html(other.nickname)} · ${score(other)} 分`, "secondary")).join("")}</div>` : `<p>${needsTarget ? "目前只有你一人，改獲得 20 分。" : "確認後結算本次分數。"}</p>${button("claim", "確認領取")}`}</div>${chest.settled ? button("next", p.cursor === 39 ? "查看結算 →" : "下一題 →") : ""}`;
 }
 function studentPage(room: Room, p: Player) {
   const done = Object.keys(p.answers).length;
   let content = "";
-  if (room.status === "ended" || p.cursor >= 40) content = summary(p);
+  if (room.status === "ended" || remainingTime(room) === 0 || p.cursor >= 40 || (p.finishedAt !== null && p.finishedAt <= Date.now())) content = summary(p);
   else if (room.status !== "running")
     content = `<section class="panel waiting"><div class="mini-icon">${icon("flag")}</div><h2>${room.status === "lobby" ? "已入座，等待老師開始" : "老師已暫停活動"}</h2><p>${room.status === "lobby" ? "老師按下「開始闖關」後，第一題就會出現。" : "進度已保存，恢復後可繼續作答。"}</p>${teacherLink()}${room.status === "paused" ? pausedReview(p) : ""}</section>`;
   else {
     const id = p.order[p.cursor]!,
       q = questions.get(id)!,
       a = p.answers[id];
-    content = `<section class="panel question" data-question="${html(id)}"><p class="eyebrow">第 ${p.cursor + 1} / 40 題　·　${html(q.sectionId)}</p><h2>${html(q.stem)}</h2><div class="choices" role="radiogroup" aria-label="答案選項">${p.choices[id]!.map((original, i) => `<button type="button" class="choice ${a ? (original === q.correctChoiceIndex ? "right" : a.selected === i ? "wrong" : "") : selected === i ? "chosen" : ""}" role="radio" data-choice="${i}" aria-checked="${a ? a.selected === i : selected === i}" tabindex="${i === Math.max(0, selected) ? 0 : -1}" ${a ? "disabled" : ""}><b>${"ABCD"[i]}</b>${html(q.choices[original]!)}${a && original === q.correctChoiceIndex ? " ✓" : a?.selected === i ? " ×" : ""}</button>`).join("")}</div>${a ? `<div class="feedback"><strong>${a.correct ? "答對了！＋100 分" : "這題答錯了"}</strong>${a.viewed ? "<p>" + html(q.explanation) + "</p>" + (!a.correct ? "<small>已閱讀詳解 · ＋20 分</small>" : "") : button("explain", a.correct ? "閱讀詳解" : "閱讀詳解，領取 20 分", "secondary")}</div>${done % 3 === 0 ? '<p class="footnote">命運事件 ' + done / 3 + " 已解鎖 · 效果待老師設定，本輪不計分。</p>" : ""}${a.correct || a.viewed ? button("next", p.cursor === 39 ? "查看結算 →" : "下一題 →") : '<p class="footnote">讀完詳解即可繼續。</p>'}` : '<button type="button" class="primary" data-action="answer" ' + (selected < 0 ? "disabled" : "") + ">送出答案 →</button>"}</section>`;
+    content = `<section class="panel question" data-question="${html(id)}"><p class="eyebrow">第 ${p.cursor + 1} / 40 題　·　${html(q.sectionId)}</p><h2>${html(q.stem)}</h2><div class="choices" role="radiogroup" aria-label="答案選項">${p.choices[id]!.map((original, i) => `<button type="button" class="choice ${a ? (original === q.correctChoiceIndex ? "right" : a.selected === i ? "wrong" : "") : selected === i ? "chosen" : ""}" role="radio" data-choice="${i}" aria-checked="${a ? a.selected === i : selected === i}" tabindex="${i === Math.max(0, selected) ? 0 : -1}" ${a ? "disabled" : ""}><b>${"ABCD"[i]}</b>${html(q.choices[original]!)}${a && original === q.correctChoiceIndex ? " ✓" : a?.selected === i ? " ×" : ""}</button>`).join("")}</div>${a ? `<div class="feedback"><strong>${a.correct ? "答對了！選一個命運寶箱" : "這題答錯了"}</strong><details ${a.viewed ? "open" : ""}><summary>閱讀詳解（不加分）</summary><p>${html(q.explanation)}</p></details></div>${a.correct ? chestPanel(room, p, id) : p.cooldownUntil !== null && Date.now() < p.cooldownUntil ? `<p class="freeze" role="status">暫停 ${Math.ceil((p.cooldownUntil - Date.now()) / 1000)} 秒，看看詳解再出發。</p>` : button("next", p.cursor === 39 ? "查看結算 →" : "下一題 →")}` : '<button type="button" class="primary" data-action="answer" ' + (selected < 0 ? "disabled" : "") + ">送出答案 →</button>"}</section>`;
   }
-  return `<div class="section-head"><div><p class="eyebrow">房間 ${room.code}　／　${html(p.nickname)}</p><h1>我的冒險手冊</h1></div>${button("ranks", showRanks ? "收起排名" : "全班排名", "secondary")}</div><div class="progress"><span style="width:${(done / 40) * 100}%"></span></div><p class="progress-label">已完成 ${done} / 40 題 <b>${score(p)} 分</b></p>${showRanks ? ranks(room) : ""}${content}`;
+  return `<div class="section-head"><div><p class="eyebrow">房間 ${room.code}　／　${html(p.nickname)}</p><h1>我的冒險手冊</h1></div>${button("ranks", showRanks ? "收起排名" : "全班排名", "secondary")}</div>${timer(room)}<div class="progress"><span style="width:${(done / 40) * 100}%"></span></div><p class="progress-label">已完成 ${done} / 40 題 <b>${score(p)} 分</b></p>${showRanks ? ranks(room) : ""}${content}`;
 }
 function render() {
   try {
@@ -159,6 +178,10 @@ function render() {
     const player = room?.players.find((p) => p.id === activeId);
     const displayed = room ?? {
       code,
+      rulesVersion: 2,
+      durationMinutes: 20,
+      remainingMs: 1200000,
+      runningSince: null,
       status: "lobby",
       players: [],
       entries: [],
@@ -237,6 +260,10 @@ root.addEventListener("click", async (e) => {
     render();
     return;
   }
+  if (action === "duration") {
+    const input = root.querySelector<HTMLInputElement>("#duration");
+    if (!input?.reportValidity()) return;
+  }
   if (action === "end" && !confirm("結束後無法恢復作答。確定結束本機活動？"))
     return;
   busy = true;
@@ -261,35 +288,23 @@ root.addEventListener("click", async (e) => {
       code,
       (room) => {
         if (teacher) {
-          if (
-            action === "running" &&
-            (room.status === "lobby" || room.status === "paused")
-          )
-            room.status = "running";
-          if (action === "paused" && room.status === "running")
-            room.status = "paused";
-          if (action === "end") room.status = "ended";
+          if (action === "running" || action === "paused") setStatus(room, action);
+          if (action === "end") setStatus(room, "ended");
+          if (action === "duration") setDuration(room, Number(root.querySelector<HTMLInputElement>("#duration")?.value));
         } else {
           const p = room.players.find((p) => p.id === activeId);
-          if (
-            !p ||
-            room.status !== "running" ||
-            !expectedId ||
-            p.order[p.cursor] !== expectedId
-          )
-            return;
+          if (!p || room.status !== "running" || !expectedId || p.order[p.cursor] !== expectedId) return;
           if (action === "answer") answer(p, expectedId, selected);
           if (action === "explain") explain(p, expectedId);
-          const recorded = p.answers[expectedId];
-          if (
-            action === "next" &&
-            recorded &&
-            (recorded.correct || recorded.viewed)
-          )
-            p.cursor++;
+          if (action.startsWith("open-")) openChest(p, expectedId, Number(action.slice(5)));
+          if (action === "claim" || action.startsWith("target-")) {
+            const target = action.startsWith("target-") ? room.players.find((other) => other.id === action.slice(7)) ?? null : null;
+            claimChest(p, expectedId, target, room.players.length > 1);
+          }
+          if (action === "next") nextQuestion(p);
         }
       },
-      teacher && code === demoCode && action === "running",
+      teacher && code === demoCode,
     );
     selected = -1;
     message = "";
@@ -324,21 +339,29 @@ window.addEventListener("storage", (e) => {
     render();
   }
 });
-if (teacher) {
-  const tick = async () => {
-    try {
-      const room = readRoom(code);
-      if (room) {
-        const previous = room.updated;
-        await update(code, publish);
-        if (previous !== readRoom(code)?.updated) render();
-      }
-    } catch {
-      message = "無法更新本機排名。";
+window.setInterval(async () => {
+  if (busy) return;
+  try {
+    const before = readRoom(code);
+    if (!before || (!teacher && before.status !== "running")) return;
+    await update(code, (current) => { if (teacher) publish(current); });
+    const room = readRoom(code);
+    if (!room) return;
+    const p = room.players.find((player) => player.id === activeId);
+    const freeze = root.querySelector<HTMLElement>(".freeze");
+    const finished = p?.finishedAt !== null && p?.finishedAt !== undefined && p.finishedAt <= Date.now();
+    if (room.status !== before.status || (freeze && p?.cooldownUntil !== null && p?.cooldownUntil !== undefined && p.cooldownUntil <= Date.now()) || (finished && !root.querySelector(".result"))) {
       render();
+      return;
     }
-  };
-  window.setInterval(tick, 10000);
-  void tick();
-}
+    const seconds = Math.ceil(remainingTime(room) / 1000);
+    const timerElement = root.querySelector(".timer");
+    if (timerElement) timerElement.textContent = `剩餘 ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+    if (freeze && p?.cooldownUntil !== null && p?.cooldownUntil !== undefined) freeze.textContent = `暫停 ${Math.max(0, Math.ceil((p.cooldownUntil - Date.now()) / 1000))} 秒，看看詳解再出發。`;
+    if (teacher && before.updated !== room.updated) {
+      const rankingPanel = root.querySelector(".dashboard > .panel:nth-child(2)");
+      if (rankingPanel) rankingPanel.outerHTML = ranks(room);
+    }
+  } catch { message = "無法更新本機進度。"; render(); }
+}, 250);
 render();

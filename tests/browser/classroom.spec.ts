@@ -24,8 +24,11 @@ test('teacher and student keep distinct identities and complete a cloud classroo
   await promisify(execFile)(process.execPath, ['scripts/authorize-teachers.mjs', '--emulator', '--project', 'demo-chinese-exam', '--email', teacherEmail, '--apply']);
   await teacher.getByRole('button', { name: '重新檢查授權' }).click();
   await teacher.getByRole('button', { name: '建立教室' }).click();
-  await expect(teacher.locator('#share')).toHaveValue(/room=[A-Z0-9]{6}/);
-  const link = await teacher.locator('#share').inputValue();
+  await expect(teacher.locator('[data-share-url]')).toHaveValue(/room=[A-Z0-9]{6}/);
+  const link = await teacher.locator('[data-share-url]').inputValue();
+  await teacher.getByText('顯示 QR Code／放大投影', { exact: true }).click();
+  await expect(teacher.getByRole('img', { name: '學生加入 QR Code', exact: true })).toBeVisible();
+  await teacher.screenshot({ path: testInfo.outputPath('teacher-share-qr.png'), fullPage: true });
   await student.goto(link);
   await student.getByLabel('玩家暱稱').fill('測試同學');
   await student.getByRole('button', { name: '加入教室' }).click();
@@ -36,6 +39,7 @@ test('teacher and student keep distinct identities and complete a cloud classroo
   await expect(teacher.getByRole('heading', { name: '老師控制台' })).toBeVisible();
   await student.getByRole('button', { name: '全班排名', exact: true }).click();
 
+  let expectedScore = 0;
   for (let ordinal = 1; ordinal <= 40; ordinal++) {
     const question = student.locator('[data-question]');
     await expect(question).toBeVisible();
@@ -67,16 +71,36 @@ test('teacher and student keep distinct identities and complete a cloud classroo
         await expect(student.getByRole('heading', { name: '老師已暫停活動' })).toBeVisible();
         await teacher.getByRole('button', { name: '恢復作答' }).click();
       }
-      await student.getByRole('button', { name: '閱讀詳解，領取 20 分' }).click();
-      await expect(student.getByText('已閱讀詳解 · ＋20 分')).toBeVisible();
+      await student.getByText('閱讀詳解（不加分）', { exact: true }).click();
+      if (ordinal === 40) await expect(student.getByText('冷凍', { exact: false })).toBeVisible();
+      if (ordinal === 1) {
+        await student.setViewportSize({ width: 390, height: 844 });
+        await student.screenshot({ path: testInfo.outputPath('student-mobile-freeze.png'), fullPage: true });
+        await student.setViewportSize({ width: 1024, height: 768 });
+      }
+    } else {
+      if (ordinal === 2) await student.screenshot({ path: testInfo.outputPath('student-tablet-three-chests.png'), fullPage: true });
+      await student.getByRole('button', { name: '寶箱 2', exact: true }).click();
+      await expect(student.locator('.chest-result')).toBeVisible();
+      if (ordinal === 2) {
+        await student.reload();
+        await expect(student.locator('.chest-result')).toBeVisible();
+        await expect(student.getByRole('button', { name: '寶箱 2', exact: true })).toHaveCount(0);
+        await student.screenshot({ path: testInfo.outputPath('student-tablet-chest.png'), fullPage: true });
+      }
+      await student.getByRole('button', { name: '確認領取', exact: true }).click();
+      await expect(student.locator('.chest-result')).toContainText(/本次 [+-]?\d+ 分/);
+      const delta = (await student.locator('.chest-result').innerText()).match(/本次 ([+-]?\d+) 分/);
+      if (!delta) throw new Error('Missing applied chest delta');
+      expectedScore += Number(delta[1]);
     }
     await student.getByRole('button', { name: ordinal === 40 ? '查看結算 →' : '下一題 →', exact: true }).click();
   }
   await expect(student.getByRole('heading', { name: '冒險結算' })).toBeVisible();
-  await expect(student.locator('.result').getByText('3840 分', { exact: true })).toBeVisible();
+  await expect(student.locator('.result').getByText(`${expectedScore} 分`, { exact: true })).toBeVisible();
   await student.screenshot({ path: testInfo.outputPath('student-summary.png'), fullPage: true });
   if (await student.getByRole('button', { name: '全班排名', exact: true }).isVisible()) await student.getByRole('button', { name: '全班排名', exact: true }).click();
-  await expect(student.locator('.rank-list').getByText('3840 分', { exact: true })).toBeVisible({ timeout: 20_000 });
+  await expect(student.locator('.rank-list').getByText(`${expectedScore} 分`, { exact: true })).toBeVisible({ timeout: 20_000 });
   teacher.once('dialog', dialog => dialog.accept());
   await teacher.getByRole('button', { name: '結束活動' }).click();
   await expect(teacher.getByRole('button', { name: '封存教室' })).toBeVisible();
@@ -84,14 +108,14 @@ test('teacher and student keep distinct identities and complete a cloud classroo
   await expect(teacher.locator('.tag')).toHaveText('已封存');
   await teacher.screenshot({ path: testInfo.outputPath('teacher-archived.png'), fullPage: true });
   await teacher.getByRole('button', { name: '建立教室' }).click();
-  await expect(teacher.locator('#share')).not.toHaveValue(link);
-  const secondLink = await teacher.locator('#share').inputValue();
+  await expect(teacher.locator('[data-share-url]')).not.toHaveValue(link);
+  const secondLink = await teacher.locator('[data-share-url]').inputValue();
   const firstCode = new URL(link).searchParams.get('room');
   const secondCode = new URL(secondLink).searchParams.get('room');
   await teacher.getByText(`${firstCode} · 已封存`, { exact: true }).locator('..').getByRole('button').click();
-  await expect(teacher.locator('#share')).toHaveValue(link);
+  await expect(teacher.locator('[data-share-url]')).toHaveValue(link);
   await teacher.getByText(`${secondCode} · 等待開始`, { exact: true }).locator('..').getByRole('button').click();
-  await expect(teacher.locator('#share')).toHaveValue(secondLink);
+  await expect(teacher.locator('[data-share-url]')).toHaveValue(secondLink);
   await expect(teacher.getByText('測試同學', { exact: true })).not.toBeVisible();
   const revoked = await context.request.patch(`http://127.0.0.1:8080/v1/projects/demo-chinese-exam/databases/(default)/documents/teacherEmails/${encodeURIComponent(teacherEmail.toLowerCase())}?updateMask.fieldPaths=authorized`, {
     headers: { Authorization: 'Bearer owner' }, data: { fields: { authorized: { booleanValue: false } } },
@@ -111,6 +135,28 @@ test('demo navigation remains offline even when a cloud configuration exists', a
   const teacher = await opened;
   await expect(teacher).toHaveURL(/demo=1/);
   await expect(teacher.getByText('本機教室管理', { exact: true })).toBeVisible();
+  await teacher.getByLabel('活動時間（1–60 分鐘）').fill('2');
+  await teacher.getByRole('button', { name: '設定時間', exact: true }).click();
+  await teacher.getByText('顯示 QR Code／放大投影', { exact: true }).click();
+  await expect(teacher.getByRole('img', { name: '學生加入 QR Code', exact: true })).toBeVisible();
+  await teacher.getByLabel('活動時間（1–60 分鐘）').focus();
+  await expect.poll(async () => teacher.locator('.share-qr-details').getAttribute('open')).not.toBeNull();
+  await teacher.getByRole('button', { name: '開始闖關', exact: true }).click();
+  await expect(page.locator('[data-question]')).toBeVisible();
+  const id = await page.locator('[data-question]').getAttribute('data-question');
+  const q = questions.get(id ?? '');
+  if (!q) throw new Error('Unknown demo question');
+  await page.getByRole('radio').filter({ hasText: q.choices[q.correctChoiceIndex] }).click();
+  await page.getByRole('button', { name: /送出答案/ }).click();
+  await expect(page.getByRole('button', { name: /寶箱 [123]/ })).toHaveCount(3);
+  await page.getByRole('button', { name: '寶箱 1', exact: true }).click();
+  await page.reload();
+  await expect(page.locator('.chest-result')).toBeVisible();
+  await page.getByRole('button', { name: '確認領取', exact: true }).click();
+  await expect(page.locator('.chest-result')).toContainText('本次');
+  await page.getByRole('button', { name: '下一題 →', exact: true }).click();
+  await expect(page.locator('[data-question]')).not.toHaveAttribute('data-question', id ?? '');
+  await teacher.close();
 });
 
 
@@ -128,6 +174,6 @@ test('preauthorized email can enter the teacher console on first Google login', 
   await expect(page.getByRole('heading', { name: '老師控制台' })).toBeVisible();
   await expect(page.getByRole('heading', { name: '等待老師授權' })).not.toBeVisible();
   await page.getByRole('button', { name: '建立教室' }).click();
-  await expect(page.locator('#share')).toHaveValue(/room=[A-Z0-9]{6}/);
+  await expect(page.locator('[data-share-url]')).toHaveValue(/room=[A-Z0-9]{6}/);
   await page.screenshot({ path: testInfo.outputPath('preauthorized-teacher.png'), fullPage: true });
 });

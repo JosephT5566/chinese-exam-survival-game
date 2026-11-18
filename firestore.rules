@@ -23,63 +23,100 @@ service cloud.firestore {
     function privateReader(roomId, uid) {
       return (signedIn() && request.auth.uid == uid && member(roomId)) || owner(roomId);
     }
-    function playing(roomId, uid) {
-      return anonymous() && request.auth.uid == uid
-        && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'running';
-    }
     function exact(data, fields) {
       return data.keys().hasAll(fields) && data.keys().hasOnly(fields);
     }
     function text(value, min, max) { return value is string && value.size() >= min && value.size() <= max; }
     function nickname(value) { return text(value, 2, 12); }
     function code(value) { return value is string && value.matches('^[A-Z0-9]{6}$'); }
-    function score(value) { return value is int && value >= 0 && value <= 5040; }
+    function score(value) { return value is int && value >= 0 && value <= 96000; }
     function clamp(value) { return value < 0 ? 0 : value; }
+    function v2(r) { return r.get('rulesVersion', 0) == 2; }
+    function live(r) {
+      return v2(r) && r.status == 'running' && r.runningSince is timestamp
+        && request.time < r.runningSince + duration.value(r.remainingMs, 'ms');
+    }
+    function playing(roomId, uid) {
+      return anonymous() && request.auth.uid == uid && member(roomId)
+        && live(get(/databases/$(database)/documents/rooms/$(roomId)).data);
+    }
     function roomShape(r) {
-      return exact(r, ['code', 'ownerUid', 'questionSetVersion', 'status', 'createdAt', 'updatedAt', 'startedAt', 'endedAt'])
-        && code(r.code) && text(r.ownerUid, 1, 128) && text(r.questionSetVersion, 1, 80)
+      return exact(r, ['code', 'ownerUid', 'questionSetVersion', 'status', 'createdAt', 'updatedAt', 'startedAt', 'endedAt',
+          'rulesVersion', 'durationMinutes', 'remainingMs', 'runningSince', 'pausedAt', 'playerCount'])
+        && v2(r) && code(r.code) && text(r.ownerUid, 1, 128) && text(r.questionSetVersion, 1, 80)
         && r.status in ['lobby', 'running', 'paused', 'ended', 'archived']
         && r.createdAt is timestamp && r.updatedAt is timestamp
-        && (r.startedAt == null || r.startedAt is timestamp)
-        && (r.endedAt == null || r.endedAt is timestamp);
+        && (r.startedAt == null || r.startedAt is timestamp) && (r.endedAt == null || r.endedAt is timestamp)
+        && r.durationMinutes is int && r.durationMinutes >= 1 && r.durationMinutes <= 60
+        && r.remainingMs is int && r.remainingMs >= 0 && r.remainingMs <= 3600000
+        && (r.runningSince == null || r.runningSince is timestamp)
+        && (r.pausedAt == null || r.pausedAt is timestamp)
+        && r.playerCount is int && r.playerCount >= 0 && r.playerCount <= 30;
+    }
+    function elapsedMs(start, end) {
+      let d = end - start;
+      return int(d.seconds() * 1000 + d.nanos() / 1000000);
     }
     function roomTransition() {
       let old = resource.data;
       let next = request.resource.data;
-      let firstStart = old.status == 'lobby' && next.status == 'running';
-      return roomShape(next)
-        && next.diff(old).affectedKeys().hasOnly(['status', 'updatedAt', 'startedAt', 'endedAt'])
-        && next.updatedAt == request.time
-        && ((old.status == 'lobby' && next.status in ['running', 'ended'])
-          || (old.status == 'running' && next.status in ['paused', 'ended'])
-          || (old.status == 'paused' && next.status in ['running', 'ended'])
-          || (old.status == 'ended' && next.status == 'archived'))
-        && next.startedAt == (firstStart ? request.time : old.startedAt)
-        && next.endedAt == (next.status == 'ended' ? request.time : old.endedAt);
+      let start = old.status == 'lobby' && next.status == 'running';
+      let resume = old.status == 'paused' && next.status == 'running';
+      let pause = old.status == 'running' && next.status == 'paused';
+      let end = old.status in ['lobby', 'running', 'paused'] && next.status == 'ended';
+      let archive = old.status == 'ended' && next.status == 'archived';
+      let configure = old.status == 'lobby' && next.status == 'lobby';
+      return v2(old) && roomShape(next) && next.updatedAt == request.time
+        && next.diff(old).affectedKeys().hasOnly(['status', 'updatedAt', 'startedAt', 'endedAt', 'durationMinutes', 'remainingMs', 'runningSince', 'pausedAt'])
+        && next.startedAt == (start ? request.time : old.startedAt)
+        && next.endedAt == (end ? request.time : old.endedAt)
+        && (configure || next.durationMinutes == old.durationMinutes)
+        && ((configure && next.runningSince == null && next.pausedAt == null && next.remainingMs == next.durationMinutes * 60000)
+          || (start && old.remainingMs > 0 && next.remainingMs == old.remainingMs && next.runningSince == request.time && next.pausedAt == null)
+          || (resume && next.remainingMs == old.remainingMs - elapsedMs(old.runningSince, old.pausedAt)
+            && next.remainingMs > 0 && next.runningSince == request.time && next.pausedAt == null)
+          || (pause && live(old) && next.runningSince == old.runningSince && next.pausedAt == request.time
+            && next.remainingMs == old.remainingMs)
+          || (end && next.runningSince == null && next.pausedAt == null && next.remainingMs == 0)
+          || (archive && next.runningSince == null && next.pausedAt == null && next.remainingMs == old.remainingMs));
     }
     function playerShape(p) {
-      return exact(p, ['nickname', 'joinedAt', 'questionOrder', 'choiceOrders', 'completedCount', 'score', 'eventCount', 'revision', 'lastOperation', 'finishedAt'])
+      return exact(p, ['nickname', 'joinedAt', 'questionOrder', 'choiceOrders', 'completedCount', 'revision', 'lastOperation', 'finishedAt', 'cooldownStartedAt', 'pendingId'])
         && nickname(p.nickname) && p.joinedAt is timestamp
         && p.questionOrder is list && p.questionOrder.size() == 40 && p.questionOrder.toSet().size() == 40
         && p.choiceOrders is map && p.choiceOrders.keys().toSet() == p.questionOrder.toSet()
         && p.completedCount is int && p.completedCount >= 0 && p.completedCount <= 40
-        && score(p.score) && p.eventCount is int && p.eventCount >= 0 && p.eventCount <= 13
-        && p.revision is int && p.revision >= 0 && p.revision <= 93
-        && (p.finishedAt == null || p.finishedAt is timestamp);
+        && p.revision is int && p.revision >= 0 && p.revision <= 120
+        && (p.finishedAt == null || p.finishedAt is timestamp)
+        && (p.cooldownStartedAt == null || p.cooldownStartedAt is timestamp)
+        && (p.pendingId == null || text(p.pendingId, 1, 128));
     }
-    function join(roomId, uid) {
-      let p = request.resource.data;
-      let r = get(/databases/$(database)/documents/rooms/$(roomId)).data;
+    function scoreShape(s) {
+      return exact(s, ['nickname', 'score', 'lastOperation']) && nickname(s.nickname) && score(s.score);
+    }
+    function initialPlayer(p) {
+      return playerShape(p) && p.joinedAt == request.time && p.completedCount == 0 && p.revision == 0
+        && p.lastOperation == null && p.finishedAt == null && p.cooldownStartedAt == null && p.pendingId == null;
+    }
+    function joining(roomId, uid) {
+      let path = /databases/$(database)/documents/rooms/$(roomId);
+      let r = get(path).data;
+      let after = getAfter(path).data;
+      let ppath = /databases/$(database)/documents/rooms/$(roomId)/players/$(uid);
+      let spath = /databases/$(database)/documents/rooms/$(roomId)/scores/$(uid);
+      let p = getAfter(ppath).data;
+      let s = getAfter(spath).data;
       let index = get(/databases/$(database)/documents/roomCodes/$(r.code)).data;
-      return anonymous() && request.auth.uid == uid && r.status == 'lobby'
+      return anonymous() && request.auth.uid == uid && v2(r) && r.status == 'lobby' && r.playerCount < 30
         && index.roomId == roomId && index.ownerUid == r.ownerUid
-        && playerShape(p) && p.joinedAt == request.time
-        && p.completedCount == 0 && p.score == 0 && p.eventCount == 0 && p.revision == 0
-        && p.lastOperation == null && p.finishedAt == null;
+        && !exists(ppath) && !exists(spath) && initialPlayer(p)
+        && scoreShape(s) && s.nickname == p.nickname && s.score == 0 && s.lastOperation == null
+        && roomShape(after) && after.playerCount == r.playerCount + 1
+        && after.diff(r).affectedKeys().hasOnly(['playerCount']);
     }
     function operation(p) {
       return p.lastOperation is map && exact(p.lastOperation, ['kind', 'id'])
-        && p.lastOperation.kind in ['answer', 'explanation', 'event'] && text(p.lastOperation.id, 1, 128);
+        && p.lastOperation.kind in ['answer', 'open', 'claim', 'finish'] && text(p.lastOperation.id, 1, 128);
     }
     function validChoices(p, id) {
       let c = p.choiceOrders[id];
@@ -87,70 +124,121 @@ service cloud.firestore {
         && c[0] is int && c[1] is int && c[2] is int && c[3] is int;
     }
     function answerShape(a) {
-      return exact(a, ['ordinal', 'selectedChoice', 'isCorrect', 'explanationViewed', 'awardedPoints', 'answeredAt', 'explanationViewedAt'])
+      return exact(a, ['ordinal', 'selectedChoice', 'isCorrect', 'explanationViewed', 'awardedPoints', 'answeredAt', 'explanationViewedAt', 'chest'])
         && a.ordinal is int && a.ordinal >= 1 && a.ordinal <= 40
         && a.selectedChoice is int && a.selectedChoice >= 0 && a.selectedChoice <= 3
-        && a.isCorrect is bool && a.explanationViewed is bool && a.awardedPoints is int
-        && a.answeredAt is timestamp
-        && (a.explanationViewedAt == null || a.explanationViewedAt is timestamp);
+        && a.isCorrect is bool && a.explanationViewed == false && a.awardedPoints == 0
+        && a.answeredAt is timestamp && a.explanationViewedAt == null;
     }
-    function newAnswer(a) {
-      return answerShape(a) && a.answeredAt == request.time
-        && a.explanationViewed == false && a.explanationViewedAt == null
-        && a.awardedPoints == (a.isCorrect ? 100 : 0);
+    function newAnswer(a) { return answerShape(a) && a.answeredAt == request.time && a.chest == null; }
+    function chestShape(c) {
+      return c is map && exact(c, ['box', 'outcome', 'targetId', 'settled', 'delta', 'fallback'])
+        && c.box is int && c.box >= 0 && c.box <= 2
+        && c.outcome is map && exact(c.outcome, ['kind', 'amount'])
+        && ((c.outcome.kind == 'gain' && c.outcome.amount in [20, 50, 80])
+          || (c.outcome.kind == 'loss' && c.outcome.amount in [10, 20, 30])
+          || (c.outcome.kind in ['steal', 'swap'] && c.outcome.amount == 0))
+        && (c.targetId == null || text(c.targetId, 1, 128))
+        && c.settled is bool && c.delta is int && c.fallback is bool;
     }
-    function viewed(old, next) {
-      return answerShape(next) && old.isCorrect == false && old.explanationViewed == false
-        && next.explanationViewed == true && next.explanationViewedAt == request.time && next.awardedPoints == 20
-        && next.diff(old).affectedKeys().hasOnly(['explanationViewed', 'explanationViewedAt', 'awardedPoints']);
+    function opened(old, next) {
+      return old.isCorrect && old.chest == null
+        && next.diff(old).affectedKeys().hasOnly(['chest']) && chestShape(next.chest)
+        && next.chest.targetId == null && !next.chest.settled && next.chest.delta == 0 && !next.chest.fallback;
     }
-    function eventShape(e, id) {
-      return exact(e, ['eventIndex', 'awardedPoints', 'createdAt'])
-        && e.eventIndex is int && e.eventIndex >= 1 && e.eventIndex <= 13
-        && id == string(e.eventIndex) && e.awardedPoints is int && e.awardedPoints >= -30 && e.awardedPoints <= 80
-        && e.createdAt == request.time;
+    function settled(old, next) {
+      return old.isCorrect && old.chest != null && !old.chest.settled
+        && next.diff(old).affectedKeys().hasOnly(['chest'])
+        && exact(next.chest, ['box', 'outcome', 'targetId', 'settled', 'delta', 'fallback'])
+        && next.chest.delta is int && next.chest.settled == true
+        && next.chest.box == old.chest.box && next.chest.outcome == old.chest.outcome;
     }
     function answerProgress(roomId, uid, old, next) {
       let id = next.lastOperation.id;
       let path = /databases/$(database)/documents/rooms/$(roomId)/players/$(uid)/answers/$(id);
       let a = getAfter(path).data;
-      return !exists(path) && newAnswer(a) && a.ordinal == old.completedCount + 1
+      return old.pendingId == null && (old.cooldownStartedAt == null || request.time >= old.cooldownStartedAt + duration.value(3, 's'))
+        && old.finishedAt == null && !exists(path) && newAnswer(a) && a.ordinal == old.completedCount + 1
         && old.questionOrder[a.ordinal - 1] == id && validChoices(old, id)
-        && next.completedCount == a.ordinal && next.eventCount == old.eventCount
-        && next.score == old.score + a.awardedPoints
-        && next.finishedAt == (a.ordinal == 40 ? request.time : old.finishedAt);
+        && next.completedCount == a.ordinal && next.pendingId == (a.isCorrect ? id : null)
+        && next.cooldownStartedAt == (a.isCorrect ? null : request.time) && next.finishedAt == null;
     }
-    function explanationProgress(roomId, uid, old, next) {
+    function chestProgress(roomId, uid, old, next) {
       let id = next.lastOperation.id;
       let path = /databases/$(database)/documents/rooms/$(roomId)/players/$(uid)/answers/$(id);
-      return viewed(get(path).data, getAfter(path).data)
-        && next.score == old.score + 20 && next.completedCount == old.completedCount
-        && next.eventCount == old.eventCount && next.finishedAt == old.finishedAt;
+      let before = get(path).data;
+      let after = getAfter(path).data;
+      return old.pendingId == id && next.completedCount == old.completedCount && next.cooldownStartedAt == old.cooldownStartedAt
+        && ((next.lastOperation.kind == 'open' && opened(before, after) && next.pendingId == id && next.finishedAt == old.finishedAt)
+          || (next.lastOperation.kind == 'claim' && next.pendingId == null
+            && next.finishedAt == (old.completedCount == 40 ? request.time : old.finishedAt)
+            && claim(roomId, uid, id)));
     }
-    function eventProgress(roomId, uid, old, next) {
+    function finishProgress(roomId, uid, old, next) {
       let id = next.lastOperation.id;
-      let path = /databases/$(database)/documents/rooms/$(roomId)/players/$(uid)/events/$(id);
-      let e = getAfter(path).data;
-      return !exists(path) && eventShape(e, id) && e.eventIndex == old.eventCount + 1
-        && old.completedCount >= e.eventIndex * 3
-        && next.score == clamp(old.score + e.awardedPoints)
-        && next.eventCount == e.eventIndex && next.completedCount == old.completedCount && next.finishedAt == old.finishedAt;
+      let a = get(/databases/$(database)/documents/rooms/$(roomId)/players/$(uid)/answers/$(id)).data;
+      return old.completedCount == 40 && old.pendingId == null && old.finishedAt == null
+        && old.cooldownStartedAt is timestamp && request.time >= old.cooldownStartedAt + duration.value(3, 's')
+        && old.questionOrder[39] == id && a.isCorrect == false
+        && next.completedCount == old.completedCount && next.pendingId == null
+        && next.cooldownStartedAt == old.cooldownStartedAt && next.finishedAt == request.time;
     }
     function progress(roomId, uid) {
       let old = resource.data;
       let next = request.resource.data;
-      return playing(roomId, uid) && playerShape(next) && operation(next) && next.revision == old.revision + 1
-        && next.diff(old).affectedKeys().hasOnly(['score', 'completedCount', 'eventCount', 'revision', 'lastOperation', 'finishedAt'])
+      return playing(roomId, uid) && operation(next) && next.revision is int && next.revision <= 120 && next.revision == old.revision + 1
+        && next.diff(old).affectedKeys().hasOnly(['completedCount', 'revision', 'lastOperation', 'finishedAt', 'cooldownStartedAt', 'pendingId'])
         && ((next.lastOperation.kind == 'answer' && answerProgress(roomId, uid, old, next))
-          || (next.lastOperation.kind == 'explanation' && explanationProgress(roomId, uid, old, next))
-          || (next.lastOperation.kind == 'event' && eventProgress(roomId, uid, old, next)));
+          || (next.lastOperation.kind in ['open', 'claim'] && chestProgress(roomId, uid, old, next))
+          || (next.lastOperation.kind == 'finish' && finishProgress(roomId, uid, old, next)));
     }
+    // The player update validates every companion document; this witness requires that update in the same commit.
     function paired(roomId, uid, kind, id) {
       let path = /databases/$(database)/documents/rooms/$(roomId)/players/$(uid);
       let before = get(path).data;
       let after = getAfter(path).data;
-      return playing(roomId, uid) && after.revision == before.revision + 1
+      return anonymous() && request.auth.uid == uid && after.revision == before.revision + 1
         && after.lastOperation == {'kind': kind, 'id': id};
+    }
+    function scoreChanged(roomId, uid, actor, id, value) {
+      let path = /databases/$(database)/documents/rooms/$(roomId)/scores/$(uid);
+      let old = get(path).data;
+      let next = getAfter(path).data;
+      return scoreShape(next) && next.nickname == old.nickname && next.score == value
+        && next.lastOperation == {'actor': actor, 'id': id};
+    }
+    function targetClaim(roomId, uid, id, c, own) {
+      let target = c.targetId;
+      let other = get(/databases/$(database)/documents/rooms/$(roomId)/scores/$(target)).data.score;
+      let stolen = other < 100 ? other : 100;
+      let ownAfter = c.outcome.kind == 'steal' ? own + stolen : other;
+      let otherAfter = c.outcome.kind == 'steal' ? other - stolen : own;
+      return target != uid && text(target, 1, 128) && !c.fallback
+        && c.outcome.kind in ['steal', 'swap'] && c.delta == ownAfter - own
+        && scoreChanged(roomId, uid, uid, id, ownAfter) && scoreChanged(roomId, target, uid, id, otherAfter);
+    }
+    function soloClaim(roomId, uid, id, c, own) {
+      let fallback = c.outcome.kind in ['steal', 'swap'];
+      let next = fallback ? own + 20 : (c.outcome.kind == 'gain' ? own + c.outcome.amount : clamp(own - c.outcome.amount));
+      return c.targetId == null && c.fallback == fallback
+        && (!fallback || get(/databases/$(database)/documents/rooms/$(roomId)).data.playerCount == 1)
+        && c.delta == next - own && scoreChanged(roomId, uid, uid, id, next);
+    }
+    function claim(roomId, uid, id) {
+      let path = /databases/$(database)/documents/rooms/$(roomId)/players/$(uid)/answers/$(id);
+      let old = get(path).data;
+      let next = getAfter(path).data;
+      let own = get(/databases/$(database)/documents/rooms/$(roomId)/scores/$(uid)).data.score;
+      return settled(old, next)
+        && ((next.chest.targetId == null && soloClaim(roomId, uid, id, next.chest, own))
+          || (next.chest.targetId != null && targetClaim(roomId, uid, id, next.chest, own)));
+    }
+    function scoreUpdate(roomId, uid) {
+      let op = request.resource.data.lastOperation;
+      let actor = request.auth.uid;
+      let a = getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(actor)/answers/$(op.id)).data;
+      return anonymous() && op.actor == actor && paired(roomId, actor, 'claim', op.id)
+        && (uid == actor || a.chest.targetId == uid);
     }
     function entry(e) {
       let s = e.score;
@@ -194,28 +282,35 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/rooms/$(request.resource.data.roomId)).data.ownerUid == request.auth.uid;
     }
     match /rooms/{roomId} {
-      allow get: if member(roomId) || owner(roomId);
+      allow get: if member(roomId) || owner(roomId)
+        || (anonymous() && v2(resource.data) && resource.data.status == 'lobby');
       allow list: if teacher() && resource.data.ownerUid == request.auth.uid;
       allow create: if teacher() && roomShape(request.resource.data)
         && request.resource.data.ownerUid == request.auth.uid && request.resource.data.status == 'lobby'
         && request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time
         && request.resource.data.startedAt == null && request.resource.data.endedAt == null
+        && request.resource.data.runningSince == null && request.resource.data.pausedAt == null && request.resource.data.playerCount == 0
+        && request.resource.data.remainingMs == request.resource.data.durationMinutes * 60000
         && getAfter(/databases/$(database)/documents/roomCodes/$(request.resource.data.code)).data == {'roomId': roomId, 'ownerUid': request.auth.uid};
-      allow update: if owner(roomId) && roomTransition();
+      allow update: if (owner(roomId) && roomTransition()) || joining(roomId, request.auth.uid);
 
       match /players/{uid} {
         allow get, list: if privateReader(roomId, uid);
-        allow create: if join(roomId, uid);
+        allow create: if joining(roomId, uid);
         allow update: if progress(roomId, uid);
         match /answers/{questionId} {
           allow read: if privateReader(roomId, uid);
-          allow create: if paired(roomId, uid, 'answer', questionId) && newAnswer(request.resource.data);
-          allow update: if paired(roomId, uid, 'explanation', questionId) && viewed(resource.data, request.resource.data);
+          allow create: if paired(roomId, uid, 'answer', questionId);
+          allow update: if paired(roomId, uid, 'open', questionId) || paired(roomId, uid, 'claim', questionId);
         }
         match /events/{eventId} {
           allow read: if privateReader(roomId, uid);
-          allow create: if paired(roomId, uid, 'event', eventId) && eventShape(request.resource.data, eventId);
         }
+      }
+      match /scores/{uid} {
+        allow read: if member(roomId) || owner(roomId);
+        allow create: if joining(roomId, uid);
+        allow update: if scoreUpdate(roomId, uid);
       }
       match /public/{snapshotId} {
         function snapshotIdValid() { return snapshotId in ['leaderboard', 'leaderboard2']; }
@@ -225,6 +320,7 @@ service cloud.firestore {
         }
         allow get: if snapshotIdValid() && (member(roomId) || owner(roomId));
         allow create, update: if snapshotIdValid() && owner(roomId)
+          && v2(get(/databases/$(database)/documents/rooms/$(roomId)).data)
           && exact(request.resource.data, ['updatedAt', 'entries'])
           && request.resource.data.updatedAt == request.time && entriesValid(request.resource.data.entries)
           && peerUpdated();
