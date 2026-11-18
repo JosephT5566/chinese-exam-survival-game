@@ -1,7 +1,12 @@
 # Firebase 整合邊界
 
-已安裝 modular Web SDK，初始化階段不呼叫 SDK，不建立網路連線或登入。
+`config.ts` 驗證公開設定，`runtime.ts` 初始化 SDK 並在任何操作前連接 Emulator。
+老師與學生使用不同名稱的 Firebase app，保留各自的登入身分。
 
-實作階段從 `.env.local` 讀取並驗證 Web config，集中初始化 Auth 與 Firestore。Emulator 必須在首次操作前連接，學生使用 Anonymous Auth，老師使用 Google Auth 且另外檢查管理員建立的 `teachers/{uid}` allowlist。
+`model.ts` 在讀取邊界驗證題庫版本、固定排列、答案與排名快照。
+`classroom.ts` 實作 room/code batch、加入與恢復、原子答案及詳解領分、
+擁有者查詢與私人／公開訂閱。UI 在 `src/app/cloud.ts`，本機示範在
+`src/app/demo.ts`，不與正式資料混用。
 
-目前 Firestore rules 拒絕全部存取。不要把準備完成的 SDK、設定模板或測試骨架視為已完成權限與房間功能。
+Firestore rules 與精確欄位見 `docs/firestore-contract.md`。Google 登入後仍需
+管理員建立 `teachers/{uid}` 授權。工具與 Emulator 操作見根目錄 README。
