@@ -2,67 +2,81 @@
 
 台灣國三國文課堂練習遊戲，目標為 30 台平板、40 題、20–30 分鐘。產品依據為 [SPEC.md](SPEC.md)。
 
-本分支提供可操作的本機像素教室。以 localhost 開啟後，在預設 DEMO01 輸入暱稱加入，於等待頁另開老師控制台並按「開始闖關」，再回到學生分頁。老師可暫停、恢復或結束。若要演示多人，在開始前由老師點「新增示範玩家」另開分頁。結束後可建立新的示範房間。
+提供 Firestore 雲端教室與本機示範。老師以 Google 登入，經管理員白名單授權後開房；學生以匿名身分輸入房間碼加入。老師可開始、暫停、恢復、結束及封存教室。學生的答案與詳解分數以交易保存，重新整理可接續原有進度，其他裝置則無法取回匿名帳號。老師與學生使用分離的 Auth 儲存，老師登入不會取代另一分頁的學生身分。
 
-進度保存在同一瀏覽器。40 題與教材對應仍待老師校對，命運事件每三題顯示一次待設定提示，暫無獎勵。老師開啟控制台會發布全班快照，最快每 10 秒一次；學生分數在作答後更新。Firebase Anonymous／Google Auth、老師 allowlist 與 Firestore 跨裝置同步留待串接。Firebase 服務與正式 rules 狀態見 [Firebase 設定紀錄](docs/firebase-setup.md)。
+40 題教材仍待老師校對，命運事件每三題提示解鎖，這版不計分。自己的分數在伺服器確認後更新；老師控制台開啟且排名有變更時，約每 10 秒發布最多 30 人的全班快照。老師離線或關閉控制台後，排行榜保留最後更新時間。結束與封存會補發最終排名；平時的 10 秒限制以交易協調，避免多個老師分頁重複發布。
 
-## 本機開始，Windows PowerShell 亦適用
+## 本機開發
 
-安裝 Node.js 24 LTS 與 npm。Firestore Emulator 另需 Java JDK 21 以上。macOS 若使用 nvm，可執行 `nvm install`、`nvm use`。
+安裝 Node.js 24 與 npm。Firestore Emulator 另需 Java JDK 21 以上。
 
-```powershell
+```sh
 npm ci
-Copy-Item .env.example .env.local
+cp .env.example .env.local
 npm run dev
 ```
 
-macOS 複製環境檔改用 `cp .env.example .env.local`。開啟終端機顯示的 Vite 網址，不設定 Firebase 也能啟動。所有 `VITE_` 值會進入瀏覽器 bundle，只能放公開 Web config，不可放私鑰或學生資料。現階段環境檔僅預留，程式尚未讀取。
+Windows PowerShell 的複製指令為 `Copy-Item .env.example .env.local`。開發設定全部留白時使用本機示範；也可隨時用 `?demo=1` 強制進入示範，預設房間碼 `DEMO01`。示範資料只存在瀏覽器，不會遷移到 Firestore。
 
-```powershell
-npm run check
-npm run test:rules
-npm run emulators
+要開發雲端流程，將 `.env.local` 設為：
+
+```dotenv
+VITE_FIREBASE_EMULATORS=true
+VITE_FIREBASE_PROJECT_ID=demo-chinese-exam
 ```
 
-`check` 檢查 rules 產生碼、strict 型別、遊戲與發布設定測試 與 production build。`test:rules` 自動啟停 Firestore Emulator，驗證老師 allowlist、房間狀態、跨學生隔離、原子計分、重複操作拒絕及完整 30 人排名快照。Emulator 使用 `demo-chinese-exam`，不需登入 Firebase、不會指向正式專案。預設 Auth 9099、Firestore 8080、Emulator UI 4000；Vite 尚未串接 Emulator。
+在不同終端執行 `npm run emulators` 與 `npm run dev`。只連接本機 Auth 9099 與 Firestore 8080，不會連接正式資料庫。Emulator UI 在 http://127.0.0.1:4000 。若沿用正式設定，請把 project ID 一起改成上述 demo ID，錯配會阻止啟動。
 
-## 目錄與下一步
+老師控制台 `?view=teacher` 的 Google 登入會開啟模擬登入視窗。首次登入後先以管理工具授權，再按「重新檢查授權」。學生由老師分享的連結加入。以不同瀏覽器 context 或無痕視窗模擬多位學生；同一瀏覽器的一般分頁共用同一位匿名學生。
 
-原始碼在 `src/`；[初始化與後續計畫](docs/implementation-plan.md) 說明範圍及待確認決策；[架構、用量與安全限制](docs/architecture.md) 比較全班排行方案。題庫資料規範見 [題庫說明](src/questions/README.md)。
+## 老師授權
 
-本次本機工具更新版本與相依套件 audit 結果見 [開發環境紀錄](docs/development-environment.md)。
+Google 登入不等於老師權限。正式老師先登入一次，在等待授權頁取得 UID；管理員使用既有 `gcloud` 登入環境執行下列工具。它只查指定 email，確認已有啟用且 email 驗證的 Google-provider 使用者，預設不寫入任何資料。
 
-Firestore 權限與原子寫入的 exact schema 見 [資料契約](docs/firestore-contract.md)。規則已於 2026-11-18 發布並讀回驗證；前端尚未串接這些資料操作。手動刪除功能完成前，rules 仍拒絕所有客戶端刪除。
+```sh
+node scripts/authorize-teachers.mjs --project chinese-exam-survival-game --email teacher@example.com
+# 確認結果後，加入 --apply。重跑只更新同一份 teachers/{uid}.authorized，並讀回確認。
+node scripts/authorize-teachers.mjs --project chinese-exam-survival-game --email teacher@example.com --apply
+```
 
-## Firebase 設定與部署，必須另行授權
+可重複傳 `--email`，最多 10 位。未登入或條件不符者不會授權，exit code 為 2；工具失敗為 1。管理員需 Firebase Auth 查詢與 Firestore 寫入 IAM 權限，前端不能自授權。撤銷權限由管理員將該文件的 `authorized` 設為 false。
 
-Hosting site 已設定為 `chinese-exam-survival-game`，發布目錄為 `dist`，不需重新執行 `firebase init`。以下指令於合併後的最新 `main` 執行，Windows PowerShell 與 macOS 均適用。本次僅合併程式碼，尚未執行部署。
+Emulator 測試加上 `--emulator` 並使用 `--project demo-chinese-exam`，工具不會取得正式憑證。不要將管理員 token、service account 私鑰或學生資料放入程式庫。
 
-```powershell
+## 驗證
+
+```sh
+npm run check
+npm run test:rules
+npm run test:integration
+npx playwright install chromium
+npm run test:browser
+```
+
+`check` 包含 rules 產物一致性、strict TypeScript、單元測試及正式 build。`test:rules` 驗證完整權限邊界；`test:integration` 啟動 Auth 與 Firestore Emulator，用真實 SDK 測試開房、加入與恢復、並發作答及詳解不重複領分、私人資料隔離、排名、生命週期與管理員授權工具。Emulator 指令皆固定使用 demo project。瀏覽器測試以同一瀏覽器的老師／學生分頁走完 40 題，包含刷新、最後詳解領分、排行與示範導覽。若要使用本機 Chrome，可設定 `PLAYWRIGHT_CHROME_PATH` 為執行檔絕對路徑。
+
+## 正式 build 與部署
+
+`.env.production` 刻意追蹤四個公開 Firebase Web SDK 設定，讓 CI build 能接上正確專案；這些值會進入瀏覽器，權限由 Firestore rules 決定。`.env.local` 仍不追蹤，且本機值優先。正式專案為 `chinese-exam-survival-game`，狀態見 [設定紀錄](docs/firebase-setup.md)。
+
+GitHub Actions 在 PR 執行所有檢查；合併或 push 至 `main` 後才自動部署 Hosting，使用 OIDC 短效憑證。開 PR 不會部署，也不會發布 rules、建立老師授權或更改計費。[部署設定](docs/hosting-auto-deploy.md)說明重跑與停用方式。
+
+手動發布需有授權並確認本機 `.env.local` 未蓋過正式設定：
+
+```sh
 npm ci
-npx firebase login
 npm run check
 npx firebase deploy --only hosting --project chinese-exam-survival-game
 ```
 
-發布成功後開啟 https://chinese-exam-survival-game.web.app ，檢查入口、加入、作答與重新整理。`--only hosting` 僅發布靜態網站，不發布 Firestore rules。合併或 push 到 `main` 後，GitHub Actions 會先執行完整檢查，再自動發布 Hosting。PR 與其他分支只執行檢查，不部署。也可在 Actions 選擇此工作流程，以 `main` 手動重跑發布。流程使用 OIDC 短效憑證，不需設定 service account 私鑰 secret。設定與停用方式見 [Hosting 自動發布](docs/hosting-auto-deploy.md)。
+發布後網站為 https://chinese-exam-survival-game.web.app 。Hosting rollback 不會回復 Firestore 資料或 rules。
 
-這版發布後仍是同一瀏覽器的本機示範，各裝置各自保存進度。正式課堂的跨裝置加入、Google／Anonymous 登入與 Firestore 同步仍需後續串接。正式 rules 的發布狀態見 [Firebase 設定紀錄](docs/firebase-setup.md)。
+## 限制與課堂驗收
 
-回滾：在 Firebase Console → Hosting → release history 選已知正常版本回復。Hosting rollback 不會回復 Firestore 資料或 rules；資料還原須有事先備份與獨立授權。
+- 這是形成性課堂練習。答對與否由前端計算，答案可被檢視，並非防作弊考試系統。
+- 現有 rules 未強制 30 人上限；老師頁會提示超額，排名固定顯示前 30 人。開始後不接受新學生。
+- 斷線時停止送出新答案；收到伺服器確認前不顯示已保存。若訂閱失敗，恢復連線後可重新整理以恢復進度。
+- 老師可封存，客戶端仍禁止刪除資料；完整巢狀清理與 30 天保留政策尚未實作。
+- 上課前核對四單元各 10 題，以 2–3 台真實裝置驗收登入、加入、作答、詳解、刷新與斷線，再進行 30 台課堂壓測。
 
-## 疑難排解
-
-- 無法啟動 Vite：檢查 `node --version` 為 24，再執行 `npm ci`。
-- Emulator 找不到 Java：安裝 JDK 21 以上並重新開啟終端機，以 `java -version` 確認。
-- Port 被占用：停止既有 Emulator，或同步修改 `firebase.json` 與 rules 測試連線埠。
-- Permission denied：須使用正確 Auth provider、老師 allowlist、membership 與原子寫入，詳見資料契約。Google 登入不會自動取得老師權限。
-- 切勿提交 `.env.local`、service account JSON、存取權杖或學生資料。
-
-## 首次課堂驗收，後續功能完成後執行
-
-- 老師核對四個單元各 10 題，未核對前保持 `pending_source_review`。
-- 2–3 台裝置確認加入、老師開始、作答、詳解、重新整理與斷線恢復。
-- 確認未核准老師無法操作、跨學生無法讀寫答案、重複操作不重複計分。
-- 30 台演練全班排行與讀寫量，確認老師暫停／結束行為。
-- 驗證完整手動刪除巢狀資料，並提醒老師於 30 天內清理。
+資料欄位與原子操作見 [Firestore 資料契約](docs/firestore-contract.md)，架構背景見 [架構紀錄](docs/architecture.md)，題庫規範見 [題庫說明](src/questions/README.md)。

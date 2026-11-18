@@ -50,3 +50,7 @@ npm run test:rules
 ```
 
 部署、正式 rules 發布與計費變更需另行授權。
+
+## 前端串接
+
+Firestore client PR 實作了 Google／匿名登入、房間與原子計分及排名。管理員工具 `scripts/authorize-teachers.mjs` 預設 dry-run，需明確加 `--apply` 才授權既有 Google 使用者。兩位指定老師尚待首次登入與管理員授權；本次開發只操作 demo Emulator，沒有變更正式 allowlist、rules 或 Hosting。操作步驟見根目錄 README。

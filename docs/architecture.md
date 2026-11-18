@@ -24,7 +24,7 @@
 
 ## 安全與資料保留
 
-rules 已實作老師 Google + allowlist、房間所有權、私人資料隔離及原子計分，並於 2026-11-18 經授權發布。管理員另建 `teachers/{uid}` 的 `authorized: true` 文件，客戶端永遠不可自授權。實際欄位與操作見 `docs/firestore-contract.md`。前端尚未串接。
+rules 已實作老師 Google + allowlist、房間所有權、私人資料隔離及原子計分，並於 2026-11-18 經授權發布。管理員另建 `teachers/{uid}` 的 `authorized: true` 文件，客戶端永遠不可自授權。實際欄位與操作見 `docs/firestore-contract.md`。前端現已由 `src/firebase/classroom.ts` 與 `src/app/cloud.ts` 串接。
 
 Spark MVP 的用戶端分數與隨機結果可被竄改，隨瀏覽器發送的答案可被檢視，不能當正式考試成績。transactions、不可變 answer/event 記錄及 rules 僅能減少一般重複領分。
 
