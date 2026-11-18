@@ -61,7 +61,7 @@ You are implementing a production-minded, tablet-first classroom quiz game. **Fi
 2. Create a room with a short code and optional room-specific QR link.
 3. Display a lobby with joined students and start/pause/end controls.
 4. Project a leaderboard suitable for classroom viewing.
-5. View participation, progress, scores, question-level statistics, and export results if approved.
+5. View participation, progress, scores, question-level statistics, for classroom review.
 6. Reset/archive a room without affecting other rooms.
 
 ## 3. Curriculum & Question Bank
@@ -293,6 +293,8 @@ teachers/{teacherUid}
 - Teacher supplies source material and verifies all 40 questions against the intended edition before curriculum-verified release; provisional game can be tested earlier.
 - Tune event probabilities, scoring, UI, and classroom flow based on testing.
 
+本輪前端採像素風，以本機示範實作學生與老師流程。正式跨裝置連線、資料刪除及部署另行驗收。
+
 ## 12. Deliverables
 
 1. Working source repository with TypeScript app and modular components.
@@ -330,7 +332,7 @@ teachers/{teacherUid}
 
 | Priority | Topic | Proposed default | Why it matters |
 |---|---|---|---|
-| P1 | Results export | Teacher CSV export in v1 | Teacher workflow, privacy |
+| 已決定 | Results export | 本輪不提供 CSV 匯出 | 2026-11-18 教師確認 |
 | P1 | Room scope | One teacher and one active room for MVP; design schema to allow future rooms | Complexity |
 | P2 | Music / sound effects | Muted by default; original/license-cleared only | Accessibility, licensing |
 
@@ -344,7 +346,7 @@ teachers/{teacherUid}
 ## 14. Immediate Next Action for Codex
 
 1. Request the existing project/repository or ZIP and Firebase Web SDK `firebaseConfig` if not yet supplied; never request service-account private keys.
-2. **Do not re-ask confirmed decisions in §13, including the Firestore rules design additions.** Remaining secondary decisions include CSV export, room scope, luck-event distribution/effects, and audio.
+2. **Do not re-ask any of the ten confirmed decisions.** Consult the latest Firestore contract for pause, join, and leaderboard behavior. Open decisions include room scope, luck-event distribution/effects, and audio. CSV export is excluded.
 3. Inspect the existing prototype, report current implementation vs requirements, and produce an incremental plan with Firestore rule tests and estimated per-session read/write costs.
 4. Implement independent scaffolding and tests while waiting for remaining choices. Require explicit approval before deployment, changing live security rules, or enabling any paid service.
 5. Do not claim real-time sync, secure teacher authorization, or Hosting deployment is complete until tested and verified.
