@@ -81,3 +81,77 @@ it("錯題重載保留剩餘凍結且閱讀詳解不影響解鎖",()=>{
   const saved=restored.players[0]!;
   explain(saved,id); expect(saved.cooldownUntil).toBe(4000); expect(score(saved)).toBe(0);
 });
+
+it('retired demo rooms cannot be recreated and identities are cleared only for that code', async () => {
+  const data = new Map<string, string>();
+  const tabs = new Map<string, string>();
+  vi.stubGlobal('localStorage', { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => data.set(key, value), removeItem: (key: string) => data.delete(key) });
+  vi.stubGlobal('sessionStorage', { removeItem: (key: string) => tabs.delete(key) });
+  vi.stubGlobal('navigator', { locks: { request: async (_key: string, run: () => unknown) => run() } });
+  const { deleteRoom, isRetired, join } = await import('../../src/game/local');
+  await update('DEMO01', () => {}, true);
+  await update('OTHER1', () => {}, true);
+  data.set('quest.identity.DEMO01', 'student'); tabs.set('quest.tab.DEMO01', 'student');
+  data.set('quest.identity.OTHER1', 'other');
+  await deleteRoom('DEMO01'); await deleteRoom('DEMO01');
+  expect(readRoom('DEMO01')).toBeNull(); expect(isRetired('DEMO01')).toBe(true);
+  await expect(update('DEMO01', () => {}, true)).rejects.toThrow('刪除');
+  await expect(join('DEMO01', '小明')).rejects.toThrow('刪除');
+  expect(readRoom('OTHER1')).not.toBeNull();
+  expect(data.has('quest.identity.DEMO01')).toBe(false); expect(tabs.has('quest.tab.DEMO01')).toBe(false);
+  expect(data.get('quest.identity.OTHER1')).toBe('other');
+});
+
+it('a partial storage failure keeps the retirement barrier and permits cleanup retry', async () => {
+  const data = new Map<string, string>();
+  let fail = true;
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => data.set(key, value),
+    removeItem: (key: string) => { if (fail && key.startsWith('quest.identity.')) throw new Error('storage failure'); data.delete(key); },
+  });
+  vi.stubGlobal('sessionStorage', { removeItem: () => {} });
+  vi.stubGlobal('navigator', { locks: { request: async (_key: string, run: () => unknown) => run() } });
+  const { deleteRoom, isRetired } = await import('../../src/game/local');
+  await update('DEMO01', () => {}, true);
+  data.set('quest.identity.DEMO01', 'student');
+  await expect(deleteRoom('DEMO01')).rejects.toThrow('storage failure');
+  expect(isRetired('DEMO01')).toBe(true);
+  await expect(update('DEMO01', () => {}, true)).rejects.toThrow('刪除');
+  fail = false; await deleteRoom('DEMO01');
+  expect(data.has('quest.identity.DEMO01')).toBe(false);
+});
+
+it('a demo tombstone records completion only after every cleanup step succeeds', async () => {
+  const data = new Map<string, string>();
+  let failFinalMarker = true;
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      if (failFinalMarker && value === 'completed') throw new Error('marker failure');
+      data.set(key, value);
+    },
+    removeItem: (key: string) => data.delete(key),
+  });
+  vi.stubGlobal('sessionStorage', { removeItem: () => {} });
+  vi.stubGlobal('navigator', { locks: { request: async (_key: string, run: () => unknown) => run() } });
+  const { deleteRoom, getDeletionState } = await import('../../src/game/local');
+  await update('DEMO01', () => {}, true);
+  await expect(deleteRoom('DEMO01')).rejects.toThrow('marker failure');
+  expect(getDeletionState('DEMO01')).toBe('deleting');
+  failFinalMarker = false;
+  await deleteRoom('DEMO01');
+  expect(getDeletionState('DEMO01')).toBe('completed');
+});
+
+it('classifies old demo retirement markers by the remaining room and identity keys', async () => {
+  const data = new Map<string, string>([['literature-quest.retired.DEMO01', 'deleted'], ['quest.identity.DEMO01', 'student']]);
+  vi.stubGlobal('localStorage', { getItem: (key: string) => data.get(key) ?? null });
+  const { getDeletionState } = await import('../../src/game/local');
+  expect(getDeletionState('DEMO01')).toBe('deleting');
+  data.delete('quest.identity.DEMO01');
+  expect(getDeletionState('DEMO01')).toBe('completed');
+  data.set('literature-quest.v2.DEMO01', 'incomplete-save');
+  expect(getDeletionState('DEMO01')).toBe('deleting');
+  expect(getDeletionState('OTHER1')).toBeNull();
+});

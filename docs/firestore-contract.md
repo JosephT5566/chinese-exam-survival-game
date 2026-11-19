@@ -143,4 +143,17 @@ entries: 每份最多 15 筆 [{ nickname: string, score: 非負整數 }]
 
 rules 核對操作次序、分數差及原子寫入，不能證明用戶端 isCorrect 或抽樣結果誠實；答案隨 bundle 發送仍可被檢視。這是課堂練習遊戲，不是防作弊考試。
 
-客戶端禁止所有刪除。完整巢狀清理、TTL及30天保留政策仍未實作。get／getAfter 相依讀取與新增公開 scores 監聽會增加用量，舊快照估算不適用完整寶箱流程。Emulator 不驗證部署規則、IAM、Google OAuth、正式資料或30台負載。
+只有目前仍獲授權的 owner 可依下列流程清理自己的 deleting 房間。TTL 與自動 30 天清理未實作。get／getAfter 相依讀取與新增公開 scores 監聽會增加用量，舊快照估算不適用完整寶箱流程。Emulator 不驗證部署規則、IAM、Google OAuth、正式資料或30台負載。
+
+
+## 可重試的房間刪除
+
+`retiredRoomCodes/{code}` 為永久退役與完成紀錄，內容只有 `{roomId, ownerUid, state: 'deleting' | 'completed'}`，不保存學生資料。與 roomCodes 相同，只允許登入者依完整代碼 get，不能 list。客戶端不能刪除此紀錄或重用該碼建立新房間。
+
+開始時在同一交易中將房間 status 改為 deleting、更新 updatedAt、建立退役紀錄，並刪除指向該房間的 roomCodes 索引。v2 只接受 lobby、ended、archived；缺少 rulesVersion 的舊房間接受既有五種狀態。未知版本拒絕。索引缺漏可續刪，錯指其他房間則停止並回報。
+
+Deleting 不可恢復遊戲。Rules 拒絕加入、作答、開箱、分數轉移、完成與排名發布，並只對仍獲授權的 owner 開放已知路徑清理。每批最多 20 份，重新查詢剩餘文件：對每位 player 清空 answers 與 events，再刪 player；隨後獨立列舉 scores 與 public 清空。清理使用原始文件，不依賴題庫、玩家或排名解析成功。撤權、離線或失敗時停止，保留父房間供續刪。
+
+最後以交易刪除房間並將退役紀錄改為 completed。重試先查對應 roomId／ownerUid 的完成紀錄，不能將失去讀權當成成功。多個分頁可收斂至同一完成結果。父房間消失後不再查詢無讀權的子集合；測試以 Emulator 管理權另行查核殘留。
+
+這是受控 schema 的正常客戶端清理流程。Rules 不會遞迴刪除，也不能證明任意子集合已空；惡意 owner 略過步驟或既存未知孤兒不在此保證內，需可信任管理員工具。刪除不移除匿名 Auth 帳號，也不影響其他房間。

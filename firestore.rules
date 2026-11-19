@@ -17,6 +17,21 @@ service cloud.firestore {
     function owner(roomId) {
       return teacher() && get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerUid == request.auth.uid;
     }
+    function deleting(roomId) {
+      return get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'deleting';
+    }
+    function cleanup(roomId) { return owner(roomId) && deleting(roomId); }
+    function deletionTransition(roomId) {
+      let old = resource.data;
+      let next = request.resource.data;
+      let retired = getAfter(/databases/$(database)/documents/retiredRoomCodes/$(old.code)).data;
+      return old.status in ['lobby', 'running', 'paused', 'ended', 'archived']
+        && ((v2(old) && old.status in ['lobby', 'ended', 'archived']) || !('rulesVersion' in old))
+        && next.status == 'deleting' && next.updatedAt == request.time
+        && next.diff(old).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && retired == {'roomId': roomId, 'ownerUid': request.auth.uid, 'state': 'deleting'}
+        && !existsAfter(/databases/$(database)/documents/roomCodes/$(old.code));
+    }
     function member(roomId) {
       return signedIn() && exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid));
     }
@@ -272,9 +287,30 @@ service cloud.firestore {
     match /teacherEmails/{email} {
       allow get: if verifiedGoogle() && teacherEmail() == email;
     }
-    match /roomCodes/{joinCode} {
+    match /retiredRoomCodes/{joinCode} {
       allow get: if signedIn() && code(joinCode);
       allow create: if teacher() && code(joinCode)
+        && !exists(/databases/$(database)/documents/retiredRoomCodes/$(joinCode))
+        && exact(request.resource.data, ['roomId', 'ownerUid', 'state'])
+        && request.resource.data.ownerUid == request.auth.uid && request.resource.data.state == 'deleting'
+        && owner(request.resource.data.roomId)
+        && get(/databases/$(database)/documents/rooms/$(request.resource.data.roomId)).data.code == joinCode
+        && getAfter(/databases/$(database)/documents/rooms/$(request.resource.data.roomId)).data.status == 'deleting';
+      allow update: if teacher() && resource.data.ownerUid == request.auth.uid
+        && resource.data.state == 'deleting' && request.resource.data.state == 'completed'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['state'])
+        && cleanup(resource.data.roomId)
+        && get(/databases/$(database)/documents/rooms/$(resource.data.roomId)).data.code == joinCode
+        && !existsAfter(/databases/$(database)/documents/rooms/$(resource.data.roomId));
+    }
+    match /roomCodes/{joinCode} {
+      allow get: if signedIn() && code(joinCode);
+      allow delete: if owner(resource.data.roomId)
+        && resource.data.ownerUid == request.auth.uid
+        && get(/databases/$(database)/documents/rooms/$(resource.data.roomId)).data.code == joinCode
+        && getAfter(/databases/$(database)/documents/rooms/$(resource.data.roomId)).data.status == 'deleting';
+      allow create: if teacher() && code(joinCode)
+        && !exists(/databases/$(database)/documents/retiredRoomCodes/$(joinCode))
         && exact(request.resource.data, ['roomId', 'ownerUid'])
         && text(request.resource.data.roomId, 1, 128) && request.resource.data.ownerUid == request.auth.uid
         && !exists(/databases/$(database)/documents/rooms/$(request.resource.data.roomId))
@@ -286,33 +322,42 @@ service cloud.firestore {
         || (anonymous() && v2(resource.data) && resource.data.status == 'lobby');
       allow list: if teacher() && resource.data.ownerUid == request.auth.uid;
       allow create: if teacher() && roomShape(request.resource.data)
+        && !exists(/databases/$(database)/documents/retiredRoomCodes/$(request.resource.data.code))
         && request.resource.data.ownerUid == request.auth.uid && request.resource.data.status == 'lobby'
         && request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time
         && request.resource.data.startedAt == null && request.resource.data.endedAt == null
         && request.resource.data.runningSince == null && request.resource.data.pausedAt == null && request.resource.data.playerCount == 0
         && request.resource.data.remainingMs == request.resource.data.durationMinutes * 60000
         && getAfter(/databases/$(database)/documents/roomCodes/$(request.resource.data.code)).data == {'roomId': roomId, 'ownerUid': request.auth.uid};
-      allow update: if (owner(roomId) && roomTransition()) || joining(roomId, request.auth.uid);
+      allow update: if (owner(roomId) && (roomTransition() || deletionTransition(roomId))) || joining(roomId, request.auth.uid);
+      allow delete: if cleanup(roomId)
+        && getAfter(/databases/$(database)/documents/retiredRoomCodes/$(resource.data.code)).data == {'roomId': roomId, 'ownerUid': request.auth.uid, 'state': 'completed'};
 
       match /players/{uid} {
+        allow delete: if cleanup(roomId);
         allow get, list: if privateReader(roomId, uid);
         allow create: if joining(roomId, uid);
         allow update: if progress(roomId, uid);
         match /answers/{questionId} {
+          allow delete: if cleanup(roomId);
           allow read: if privateReader(roomId, uid);
           allow create: if paired(roomId, uid, 'answer', questionId);
           allow update: if paired(roomId, uid, 'open', questionId) || paired(roomId, uid, 'claim', questionId);
         }
         match /events/{eventId} {
+          allow delete: if cleanup(roomId);
           allow read: if privateReader(roomId, uid);
         }
       }
       match /scores/{uid} {
+        allow delete: if cleanup(roomId);
         allow read: if member(roomId) || owner(roomId);
         allow create: if joining(roomId, uid);
         allow update: if scoreUpdate(roomId, uid);
       }
       match /public/{snapshotId} {
+        allow list: if cleanup(roomId);
+        allow delete: if cleanup(roomId);
         function snapshotIdValid() { return snapshotId in ['leaderboard', 'leaderboard2']; }
         function peerUpdated() {
           let peer = snapshotId == 'leaderboard' ? 'leaderboard2' : 'leaderboard';
@@ -321,6 +366,7 @@ service cloud.firestore {
         allow get: if snapshotIdValid() && (member(roomId) || owner(roomId));
         allow create, update: if snapshotIdValid() && owner(roomId)
           && v2(get(/databases/$(database)/documents/rooms/$(roomId)).data)
+          && !deleting(roomId)
           && exact(request.resource.data, ['updatedAt', 'entries'])
           && request.resource.data.updatedAt == request.time && entriesValid(request.resource.data.entries)
           && peerUpdated();

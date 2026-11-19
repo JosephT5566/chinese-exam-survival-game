@@ -1,3 +1,4 @@
+import { roomLabels, canDelete, controlButton, deletionSection, confirmRoomDeletion, preserveDetails, runningHint } from './room-controls';
 import "./style.css";
 import "./rewards.css";
 import { sharePanel, mountShare } from "./share";
@@ -5,6 +6,9 @@ import { remainingTime } from "../game/rewards";
 import { sections, questions } from "../questions/bank";
 import { answer, explain, score, openChest, claimChest, nextQuestion, type Player } from "../game/session";
 import {
+  deleteRoom,
+  isRetired,
+  getDeletionState,
   setDuration,
   setStatus,
   demoCode,
@@ -50,12 +54,9 @@ let message = "";
 let selected = -1;
 let busy = false;
 const symbols = ["mountain", "bowl", "tree", "scroll"];
-const statusLabels: Record<Status, string> = {
-  lobby: "等待開始",
-  running: "闖關中",
-  paused: "已暫停",
-  ended: "已結束",
-};
+const statusLabels = roomLabels;
+let busyAction = "";
+let durationDraft: string | null = null;
 const html = (value: string) =>
   value.replace(
     /[&<>"']/g,
@@ -64,14 +65,8 @@ const html = (value: string) =>
         c
       ]!,
   );
-const button = (action: string, label: string, kind = "primary") =>
-  '<button type="button" class="' +
-  kind +
-  '" data-action="' +
-  action +
-  '">' +
-  label +
-  "</button>";
+const button = (action: string, label: string, kind = "primary") => controlButton(action,
+  busy && busyAction === action ? action === 'paused' ? '正在暫停…' : action === 'running' ? '正在恢復…' : action === 'end' ? '正在結束…' : label : label, busy, kind);
 function url(view: string, target = code) {
   const u = new URL(location.href);
   u.search = new URLSearchParams({ room: target, view, demo: "1" }).toString();
@@ -125,7 +120,17 @@ function teacherPage(room: Room) {
     paused: ["running", "恢復作答"],
   };
   const next = statuses[room.status];
-  return `<div class="section-head"><div><p class="eyebrow">本機教室管理</p><h1>老師控制台</h1></div><span class="tag">${statusLabels[room.status]}</span></div><div class="dashboard"><section class="panel"><h2>教室狀態</h2><p class="muted">同一瀏覽器的分頁可共同使用此房間。</p><div class="stats"><div><small>房間碼</small><strong>${room.code}</strong></div><div><small>已加入</small><strong>${room.players.length} / 30</strong></div></div>${timer(room)}${room.status === "lobby" ? `<div class="duration-control"><label for="duration">活動時間（1–60 分鐘）</label><input id="duration" type="number" min="1" max="60" value="${room.durationMinutes}">${button("duration", "設定時間", "secondary")}</div>` : ""}${sharePanel(url("student"), true)}<div class="actions">${next ? button(next[0], next[1]) : button("new", "建立新示範房間")}${room.status !== "ended" ? button("end", "結束活動", "secondary") : ""}<a class="text-link" href="${html(url("student"))}">回學生畫面 →</a>${room.status === "lobby" ? '<a class="text-link" target="_blank" rel="noopener" href="' + html(url("student") + "&guest=1") + '">新增示範玩家 ↗</a>' : ""}</div></section>${ranks(room)}</div><section class="panel"><h2>玩家進度</h2>${room.players.length ? '<ul class="rank-list">' + room.players.map((p) => "<li><span>" + html(p.nickname) + "</span><strong>" + Object.keys(p.answers).length + " / 40 題</strong><small>" + (p.finishedAt ? "已完成" : "進行中") + "</small></li>").join("") + "</ul>" : '<p class="empty">還沒有玩家。先從學生畫面加入，再由老師開始。</p>'}</section>`;
+  const locked = room.status === 'running';
+  return `<div class="teacher-toolbar"><h1 tabindex="-1">老師控制台</h1><span class="teacher-email">本機房間管理</span></div>
+  <section class="panel room-core"><div class="room-summary"><h2 tabindex="-1">房間 ${html(room.code)}</h2><span class="room-status tag ${room.status}">${statusLabels[room.status]}</span></div>
+  <div class="stats"><div><small>已加入</small><strong>${room.players.length} / 30</strong></div><div><small>已完成</small><strong>${room.players.filter(p => p.finishedAt !== null).length}</strong></div></div>${timer(room)}
+  <div class="actions">${next ? button(next[0], next[1]) : ''}${room.status !== 'ended' ? button('end', '結束活動', 'danger') : ''}</div>${locked ? `<p class="management-hint" id="running-hint">${runningHint}</p>` : ''}</section>
+  <section class="panel"><h2>玩家進度</h2>${room.players.length ? `<ul class="rank-list">${room.players.map(p => `<li><span>${html(p.nickname)}</span><strong>${Object.keys(p.answers).length} / 40 題</strong><small>${p.finishedAt ? '已完成' : '進行中'}</small></li>`).join('')}</ul>` : '<p class="empty">還沒有玩家。先分享房間，再開始活動。</p>'}</section>
+  <details class="teacher-ranks" data-disclosure="ranks-${room.code}"><summary>全班排行榜</summary>${ranks(room)}</details>
+  <details class="teacher-management" data-disclosure="management-${room.code}-${room.status}" ${room.status !== 'running' ? 'open' : ''}><summary>房間管理</summary>${controlButton('new', '建立新示範房間', busy || locked)}${sharePanel(url('student'), true)}
+  <div class="duration-control"><label for="duration">活動時間（1–60 分鐘）</label><input id="duration" type="number" min="1" max="60" value="${room.durationMinutes}" ${busy || room.status !== 'lobby' ? 'disabled' : ''}>${controlButton('duration', '設定時間', busy || room.status !== 'lobby')}</div>
+  <a class="text-link" href="${html(url('student'))}">回學生畫面 →</a>${room.status === 'lobby' ? `<a class="text-link" target="_blank" rel="noopener" href="${html(url('student') + '&guest=1')}">新增示範玩家 ↗</a>` : ''}${deletionSection(room.code, room.status, busy || !canDelete(room.status))}</details>`;
+
 }
 function summary(p: Player) {
   const entries = Object.entries(p.answers),
@@ -173,7 +178,19 @@ function studentPage(room: Room, p: Player) {
   return `<div class="section-head"><div><p class="eyebrow">房間 ${room.code}　／　${html(p.nickname)}</p><h1>我的冒險手冊</h1></div>${button("ranks", showRanks ? "收起排名" : "全班排名", "secondary")}</div>${timer(room)}<div class="progress"><span style="width:${(done / 40) * 100}%"></span></div><p class="progress-label">已完成 ${done} / 40 題 <b>${score(p)} 分</b></p>${showRanks ? ranks(room) : ""}${content}`;
 }
 function render() {
+  const restoreDetails = preserveDetails(root);
+  const focused = document.activeElement;
+  const focusedDuration = focused instanceof HTMLInputElement && focused.id === "duration";
+  const focusedAction = focused instanceof HTMLElement ? focused.dataset.action : undefined;
   try {
+    const deletion = getDeletionState(code);
+    if (deletion) {
+      activeId = ''; sessionStorage.removeItem('quest.tab.' + code);
+      const complete = deletion === 'completed';
+      const status = complete ? `房間 ${html(code)} 無法繼續使用，請向老師索取新房間碼。` : teacher ? '房間已停止活動，部分清理尚未完成。請繼續刪除剩餘紀錄。' : '房間正在刪除，無法繼續活動。';
+      root.innerHTML = `<main data-deletion-state="${deletion}"><section class="panel"><h1 tabindex="-1">${complete ? '房間已刪除' : '房間刪除尚未完成'}</h1><p role="status">${status}</p>${teacher ? complete ? button('new', '建立新示範房間') : button('retry-delete', '繼續刪除', 'danger') : `<a class="secondary" href="?demo=1">返回學生入口</a>`}</section>${message ? `<p role="alert">${html(message)}</p>` : ''}</main>`;
+      return;
+    }
     const room = readRoom(code);
     const player = room?.players.find((p) => p.id === activeId);
     const displayed = room ?? {
@@ -187,7 +204,13 @@ function render() {
       entries: [],
       updated: 0,
     };
-    root.innerHTML = `<header><div class="bar"><a class="brand" href="${html(url("student"))}">${icon("book")} 國文段考生存戰</a><nav aria-label="主要導覽"><a class="${!teacher ? "active" : ""}" href="${html(url("student"))}">學生入口</a><a class="${teacher ? "active" : ""}" href="${html(url("teacher"))}">老師控制台</a></nav></div></header><main><div class="crumb">教室大廳 <span>/</span> ${teacher ? "老師控制台" : player ? "冒險手冊" : "學生入口"}<strong><i></i> 本機示範</strong></div>${teacher ? teacherPage(displayed) : room && player ? studentPage(room, player) : joinPage()}${(teacher || player) && message ? '<p class="error" role="alert">' + html(message) + "</p>" : ""}</main><footer><span>${icon("book")} 國三國文・課堂練習</span><span>進度儲存在此瀏覽器</span></footer>`;
+    root.innerHTML = `<header><div class="bar"><a class="brand" href="${html(url("student"))}">${icon("book")} 國文段考生存戰</a><nav aria-label="主要導覽"><a class="${!teacher ? "active" : ""}" href="${html(url("student"))}">學生入口</a><a class="${teacher ? "active" : ""}" href="${html(url("teacher"))}">老師控制台</a></nav></div></header><main><div class="crumb">房間大廳 <span>/</span> ${teacher ? "老師控制台" : player ? "冒險手冊" : "學生入口"}<strong><i></i> 本機示範</strong></div>${teacher ? teacherPage(displayed) : room && player ? studentPage(room, player) : joinPage()}${(teacher || player) && message ? '<p class="error" role="alert">' + html(message) + "</p>" : ""}</main><footer><span>${icon("book")} 國三國文・課堂練習</span><span>進度儲存在此瀏覽器</span></footer>`;
+    restoreDetails();
+    if (displayed.status !== 'lobby') durationDraft = null;
+    const duration = root.querySelector<HTMLInputElement>('#duration');
+    if (duration && durationDraft !== null) duration.value = durationDraft;
+    if (focusedDuration && duration && !duration.disabled && !document.querySelector('dialog[open]')) duration.focus({ preventScroll: true });
+    if (!document.querySelector('dialog[open]') && focusedAction) (root.querySelector<HTMLElement>(`[data-action="${focusedAction}"]:not(:disabled)`) ?? root.querySelector<HTMLElement>('.room-core [data-action]:not(:disabled),.room-core h2'))?.focus({ preventScroll: true });
     const canvas = root.querySelector("canvas");
     if (canvas) paintLandscape(canvas);
   } catch {
@@ -197,6 +220,9 @@ function render() {
       "</section></main>";
   }
 }
+root.addEventListener('input', event => {
+  if (teacher && event.target instanceof HTMLInputElement && event.target.id === 'duration') durationDraft = event.target.value;
+});
 root.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (busy || !(e.target instanceof HTMLFormElement)) return;
@@ -244,7 +270,7 @@ root.addEventListener("keydown", (e) => {
 });
 root.addEventListener("click", async (e) => {
   const b = e.target instanceof Element ? e.target.closest("button") : null;
-  if (!b || busy) return;
+  if (!b || b.disabled || busy) return;
   if (b.dataset.choice !== undefined) {
     selected = Number(b.dataset.choice);
     render();
@@ -253,8 +279,22 @@ root.addEventListener("click", async (e) => {
       ?.focus();
     return;
   }
+  const expectedId = b.closest("[data-question]")?.getAttribute("data-question");
   const action = b.dataset.action;
   if (!action) return;
+  if (teacher && action === 'delete') {
+    const targetCode = code;
+    const current = readRoom(code);
+    if (!current || !canDelete(current.status)) return;
+    confirmRoomDeletion(targetCode, () => !busy && code === targetCode && canDelete(readRoom(targetCode)?.status ?? 'running'), async () => {
+      busy = true; busyAction = 'delete'; message = ''; render();
+      try { await deleteRoom(targetCode); activeId = ''; }
+      catch (error) { message = error instanceof Error ? error.message : '刪除失敗，請重試。'; }
+      finally { busy = false; busyAction = ''; render(); root.querySelector<HTMLElement>('h1')?.focus(); }
+    });
+    return;
+  }
+  if (teacher && readRoom(code)?.status === 'running' && ['new', 'duration', 'retry-delete'].includes(action)) return;
   if (action === "ranks") {
     showRanks = !showRanks;
     render();
@@ -266,9 +306,13 @@ root.addEventListener("click", async (e) => {
   }
   if (action === "end" && !confirm("結束後無法恢復作答。確定結束本機活動？"))
     return;
-  busy = true;
+  busy = true; busyAction = action;
+  const requestedMinutes = Number(root.querySelector<HTMLInputElement>('#duration')?.value);
+  render();
   try {
+    if (action === 'retry-delete') { await deleteRoom(code); message = ''; return; }
     if (action === "new") {
+      if (!isRetired(code) && readRoom(code)) await update(code, current => { if (current.status === "running") throw new Error(runningHint); });
       let nextCode: string;
       do {
         nextCode = crypto
@@ -276,21 +320,19 @@ root.addEventListener("click", async (e) => {
           .replaceAll("-", "")
           .slice(0, 6)
           .toUpperCase();
-      } while (readRoom(nextCode));
+      } while (readRoom(nextCode) || isRetired(nextCode));
       await update(nextCode, () => {}, true);
       location.assign(url("teacher", nextCode));
       return;
     }
-    const expectedId = b
-      .closest("[data-question]")
-      ?.getAttribute("data-question");
+
     await update(
       code,
       (room) => {
         if (teacher) {
           if (action === "running" || action === "paused") setStatus(room, action);
           if (action === "end") setStatus(room, "ended");
-          if (action === "duration") setDuration(room, Number(root.querySelector<HTMLInputElement>("#duration")?.value));
+          if (action === "duration") setDuration(room, requestedMinutes);
         } else {
           const p = room.players.find((p) => p.id === activeId);
           if (!p || room.status !== "running" || !expectedId || p.order[p.cursor] !== expectedId) return;
@@ -306,12 +348,13 @@ root.addEventListener("click", async (e) => {
       },
       teacher && code === demoCode,
     );
+    if (action === "duration") durationDraft = null;
     selected = -1;
     message = "";
   } catch (error) {
     message = error instanceof Error ? error.message : "無法儲存，請重試。";
   } finally {
-    busy = false;
+    busy = false; busyAction = "";
     render();
     if (action === "next") {
       const heading = root.querySelector<HTMLElement>(
@@ -342,6 +385,7 @@ window.addEventListener("storage", (e) => {
 window.setInterval(async () => {
   if (busy) return;
   try {
+    if (isRetired(code)) { if (activeId || root.querySelector('[data-deletion-state]')?.getAttribute('data-deletion-state') !== getDeletionState(code)) render(); return; }
     const before = readRoom(code);
     if (!before || (!teacher && before.status !== "running")) return;
     await update(code, (current) => { if (teacher) publish(current); });
@@ -359,7 +403,7 @@ window.setInterval(async () => {
     if (timerElement) timerElement.textContent = `剩餘 ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
     if (freeze && p?.cooldownUntil !== null && p?.cooldownUntil !== undefined) freeze.textContent = `暫停 ${Math.max(0, Math.ceil((p.cooldownUntil - Date.now()) / 1000))} 秒，看看詳解再出發。`;
     if (teacher && before.updated !== room.updated) {
-      const rankingPanel = root.querySelector(".dashboard > .panel:nth-child(2)");
+      const rankingPanel = root.querySelector(".teacher-ranks > .panel");
       if (rankingPanel) rankingPanel.outerHTML = ranks(room);
     }
   } catch { message = "無法更新本機進度。"; render(); }

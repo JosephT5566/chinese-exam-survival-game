@@ -374,3 +374,10 @@ Joining atomically creates private progress plus a public score and increments `
 3. Inspect the existing prototype, report current implementation vs requirements, and produce an incremental plan with Firestore rule tests and estimated per-session read/write costs.
 4. Implement independent scaffolding and tests while waiting for remaining choices. Require explicit approval before deployment, changing live security rules, or enabling any paid service.
 5. Do not claim real-time sync, secure teacher authorization, or Hosting deployment is complete until tested and verified.
+
+
+## 房間管理補充，issue #8
+
+老師控制台採「房間」用語。當前房間 running 時，老師只可暫停或結束活動，其他房間管理操作停用；學生作答、寶箱及排名照常。主要資訊為房間碼、狀態、計時、人數與玩家進度，其他管理資訊與排名可展開。
+
+v2 只在 lobby、ended、archived 提供永久刪除，paused／running 必須先結束。舊 v1 只讀房間可直接清理，不恢復遊戲或補發排名。刪除需輸入房間碼，清除已知房間子資料，支援刷新後續刪。永久退役碼避免舊連結加入日後的新房間；匿名 Auth 帳號保留。瀏覽器不保證發現既存未知孤兒；完整信任邊界見 [Firestore 契約](docs/firestore-contract.md#可重試的房間刪除)。無自動清理與 TTL。

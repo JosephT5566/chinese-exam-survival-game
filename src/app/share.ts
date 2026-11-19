@@ -19,9 +19,9 @@ export function sharePanel(url: string, demo = false): string {
   return `<section class="share-panel" aria-label="分享加入連結">
     <div class="share-actions"><button type="button" class="secondary" data-share-action="share">分享連結</button><button type="button" class="secondary" data-share-action="copy">複製連結</button></div>
     <label class="share-link">學生加入連結<input data-share-url readonly value="${escape(url)}" aria-label="學生加入連結"></label>
-    ${demo ? '<p class="share-warning">示範教室只在同一個瀏覽器共用，請在同一瀏覽器開啟學生頁面；其他裝置無法加入。</p>' : ''}
+    ${demo ? '<p class="share-warning">示範房間只在同一個瀏覽器共用，請在同一瀏覽器開啟學生頁面；其他裝置無法加入。</p>' : ''}
     ${local ? '<p class="share-warning">這是本機網址，其他裝置無法使用。請改用已部署的公開網址。</p>' : ''}
-    <details class="share-qr-details"><summary>顯示 QR Code／放大投影</summary><div class="share-qr" aria-label="學生加入 QR Code"></div><p>請掃描 QR Code 加入教室。</p></details>
+    <details class="share-qr-details"><summary>顯示 QR Code／放大投影</summary><div class="share-qr" aria-label="學生加入 QR Code"></div><p>請掃描 QR Code 加入房間。</p></details>
     <p class="share-status" role="status" aria-live="polite"></p>
   </section>`;
 }
