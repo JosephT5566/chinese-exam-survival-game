@@ -8,6 +8,7 @@ import { paintLandscape } from './landscape';
 import { icon } from './art';
 import { remainingTime } from '../game/rewards';
 import { sharePanel, mountShare } from './share';
+import { chestStatus, isChestAction, notifyAttack, clearAttackNotice, renderStudentMarkup, targetLabel } from './chest-feedback';
 import './rewards.css';
 
 const root = document.querySelector<HTMLDivElement>('#app');
@@ -27,6 +28,18 @@ let roomStops: (() => void)[] = [], identityStops: (() => void)[] = [], epoch = 
 let publisher: ReturnType<typeof setInterval> | undefined;
 const labels = roomLabels;
 let busyAction = '';
+interface ChestRequest {
+  roomId: string;
+  questionId: string;
+  action: string;
+  phase: 'saving' | 'checking' | 'unconfirmed';
+  error: string;
+  returnFocus: boolean;
+  checkAfterCurrent: boolean;
+}
+let chestRequest: ChestRequest | null = null;
+let restoreChestFocus = false;
+let chestError: { questionId: string; message: string } | null = null;
 let unavailable = '';
 const escape = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c);
 const button = (action: string, label: string, kind = 'primary') => `<button type="button" class="${kind}" data-action="${action}" ${busy ? 'disabled' : ''}>${busy && busyAction === action ? (action === 'paused' ? '正在暫停…' : action === 'running' ? '正在恢復…' : action === 'ended' ? '正在結束…' : label) : label}</button>`;
@@ -42,6 +55,7 @@ function stopRoom() {
   publisher = undefined;
   room = null; player = null; roster = []; peers = []; answers = {}; leaderboard = null;
   cursor = null; summaryVisible = false; viewedCorrect.clear(); selected = -1;
+  chestRequest = null; chestError = null; restoreChestFocus = false; clearAttackNotice();
 }
 function report(error: unknown) { message = cloudError(error); render(); }
 function rankings() {
@@ -83,11 +97,20 @@ function review(p: CloudPlayer) {
 }
 function chestPanel(p: CloudPlayer, id: string) {
   const chest = answers[id]?.chest;
-  if (!chest) return `<div class="chest-grid" aria-label="選擇命運寶箱">${[0, 1, 2].map(box => `<button type="button" class="chest-box" data-action="open-${box}" ${busy ? 'disabled' : ''}><span class="chest-pixel" aria-hidden="true"></span>寶箱 ${box + 1}</button>`).join('')}</div>`;
+  const request = chestRequest?.questionId === id ? chestRequest : null;
+  const status = chestStatus(request && !navigator.onLine ? '連線中斷，等待確認保存結果。' :
+    request?.phase === 'unconfirmed' ? '暫時無法確認保存結果。' :
+    request?.phase === 'checking' ? '正在確認保存狀態…' :
+    request ? request.action.startsWith('open-') ? '開啟中…' : '結算中…' :
+    chestError?.questionId === id ? escape(chestError.message) : '',
+    request?.phase === 'unconfirmed' && navigator.onLine);
+  const rewardButton = (action: string, label: string, kind = 'primary') =>
+    `<button type="button" class="${kind}" data-action="${action}" ${request?.action === action ? 'data-chest-selected' : ''} ${busy || request || !navigator.onLine ? 'disabled' : ''}>${label}</button>`;
+  if (!chest) return `<div class="chest-grid" aria-label="選擇命運寶箱">${[0, 1, 2].map(box => rewardButton('open-' + box, `<span class="chest-pixel" aria-hidden="true"></span>寶箱 ${box + 1}`, 'chest-box')).join('')}</div>${status}`;
   const effect = chest.outcome, needsTarget = effect.kind === 'steal' || effect.kind === 'swap';
   const others = peers.filter(peer => peer.id !== p.id);
   const label = effect.kind === 'gain' ? `加分 ${effect.amount} 分` : effect.kind === 'loss' ? `扣分 ${effect.amount} 分` : effect.kind === 'steal' ? '搶奪 100 分' : '互換分數';
-  return `<div class="chest-result" role="status"><strong>寶箱 ${chest.box + 1}：${label}</strong>${chest.settled ? `<p>${chest.fallback ? '目前沒有其他玩家，改獲得 20 分。' : '已結算'} 本次 ${chest.delta >= 0 ? '+' : ''}${chest.delta} 分</p>` : needsTarget && room && room.playerCount > 1 ? `<p>選擇對象，確認後立即結算。</p><div class="target-list">${others.map(peer => button('target-' + peer.id, `${escape(peer.nickname)} · ${peer.score} 分`, 'secondary')).join('')}</div>${others.length ? '' : '<p>正在讀取同房玩家…</p>'}` : `<p>${needsTarget ? '目前只有你一人，改獲得 20 分。' : '確認後結算本次分數。'}</p>${button('claim', '確認領取')}`}</div>${chest.settled ? button('next', cursor === 39 ? '查看結算 →' : '下一題 →') : ''}`;
+  return `<div class="chest-result"><strong>寶箱 ${chest.box + 1}：${label}</strong>${chest.settled ? `<p role="status">${chest.fallback ? '目前沒有其他玩家，改獲得 20 分。' : '已結算'} 本次 ${chest.delta >= 0 ? '+' : ''}${chest.delta} 分</p>` : needsTarget && room && room.playerCount > 1 ? `<p>選擇對象，確認後立即結算。</p><div class="target-list">${others.map(peer => rewardButton('target-' + peer.id, targetLabel(escape(peer.nickname), peer.score), 'secondary')).join('')}</div>${others.length ? '' : '<p>正在讀取同房玩家…</p>'}` : `<p>${needsTarget ? '目前只有你一人，改獲得 20 分。' : '確認後結算本次分數。'}</p>${rewardButton('claim', '確認領取')}`}</div>${status}${chest.settled && !request ? button('next', cursor === 39 ? '查看結算 →' : '下一題 →') : ''}`;
 }
 function studentView() {
   if (!room) return unavailable ? `<section class="panel"><h1>房間無法繼續使用</h1><p role="status">${escape(unavailable)}</p><a class="secondary" href="${escape(url('student'))}">返回學生入口</a></section>` : landing();
@@ -102,7 +125,7 @@ function studentView() {
     const frozen = !a?.correct && (p.cooldownUntil ?? 0) > Date.now();
     content = `<section class="panel question" data-question="${escape(id)}"><p class="eyebrow">第 ${(cursor ?? 0) + 1} / 40 題 · ${escape(q.sectionId)}</p><h2>${escape(q.stem)}</h2><div class="choices" role="radiogroup" aria-label="答案選項">${p.choices[id]!.map((original, i) => `<button type="button" class="choice ${a ? original === q.correctChoiceIndex ? 'right' : a.selected === i ? 'wrong' : '' : selected === i ? 'chosen' : ''}" role="radio" aria-checked="${a ? a.selected === i : selected === i}" tabindex="${i === Math.max(0, selected) ? 0 : -1}" data-choice="${i}" ${a || busy ? 'disabled' : ''}><b>${'ABCD'[i]}</b>${escape(q.choices[original] ?? '')}</button>`).join('')}</div>${a ? `<div class="feedback"><strong>${a.correct ? '答對了！選一個命運寶箱' : '這題答錯了'}</strong><details ${viewedCorrect.has(id) ? 'open' : ''}><summary>閱讀詳解（不加分）</summary><p>${escape(q.explanation)}</p></details></div>${a.correct ? chestPanel(p, id) : frozen ? `<p class="freeze" role="status">冷凍 <span data-freeze>${Math.ceil(((p.cooldownUntil ?? 0) - Date.now()) / 1000)}</span> 秒，看看詳解再出發。</p>` : button('next', cursor === 39 ? '查看結算 →' : '下一題 →')}` : `<button type="button" class="primary" data-action="answer" ${busy || selected < 0 ? 'disabled' : ''}>送出答案</button>`}</section>`;
   } else content = review(p);
-  return `<div class="section-head"><div><p class="eyebrow">房間 ${escape(room.code)} ／ ${escape(p.nickname)}</p><h1>我的冒險手冊</h1></div>${button('ranks', showRanks ? '收起排名' : '全班排名', 'secondary')}</div>${room.rulesVersion === 2 ? timer(room) : ''}<div class="progress"><span style="width:${p.completedCount / 40 * 100}%"></span></div><p class="progress-label">已保存 ${p.completedCount} / 40 題 <b>${p.totalScore} 分</b></p>${showRanks ? rankings() : ''}${content}`;
+  return `<div class="section-head"><div><p class="eyebrow">房間 ${escape(room.code)} ／ ${escape(p.nickname)}</p><h1>我的冒險手冊</h1></div>${button('ranks', showRanks ? '收起排名' : '全班排名', 'secondary')}</div>${room.rulesVersion === 2 ? timer(room) : ''}<div class="progress"><span style="width:${p.completedCount / 40 * 100}%"></span></div><p class="progress-label">已保存 ${p.completedCount} / 40 題 <b>${p.totalScore} 分</b></p><div>${showRanks ? rankings() : ''}</div>${content}`;
 }
 function render() {
   const restoreDetails = preserveDetails(appRoot);
@@ -116,7 +139,8 @@ function render() {
   const duration = appRoot.querySelector<HTMLInputElement>('#duration')?.value;
   const shareOpen = appRoot.querySelector<HTMLDetailsElement>('.share-qr-details')?.open;
   const explanationOpen = appRoot.querySelector<HTMLDetailsElement>('.feedback details')?.open;
-  appRoot.innerHTML = `<header><div class="bar"><a class="brand" href="${escape(url('student'))}">${icon('book')} 國文段考生存戰</a><nav aria-label="主要導覽"><a href="${escape(url('student', code))}">學生入口</a><a href="${escape(url('teacher'))}">老師控制台</a></nav></div></header><main><div class="crumb">房間大廳 / ${teacher ? '老師控制台' : '學生入口'}<strong>${runtime.emulators ? '本機模擬器' : '雲端房間'}</strong></div><p class="error" role="alert">${escape(message)}</p>${navigator.onLine ? '' : '<p class="error" role="status">目前離線，暫停送出。請恢復連線後再試。</p>'}${busy ? `<p role="status">${busyAction === 'delete' ? '正在刪除…' : '正在處理，等待伺服器確認…'}</p>` : ''}${loading ? '<section class="panel"><p role="status">正在連線房間…</p></section>' : teacher ? teacherView() : studentView()}</main><footer><span>國三國文・課堂練習</span><a href="?demo=1">本機示範</a></footer>`;
+  const markup = `<header><div class="bar"><a class="brand" href="${escape(url('student'))}">${icon('book')} 國文段考生存戰</a><nav aria-label="主要導覽"><a href="${escape(url('student', code))}">學生入口</a><a href="${escape(url('teacher'))}">老師控制台</a></nav></div></header><main><div class="crumb">房間大廳 / ${teacher ? '老師控制台' : '學生入口'}<strong>${runtime.emulators ? '本機模擬器' : '雲端房間'}</strong></div><p class="error" role="alert">${escape(message)}</p>${navigator.onLine ? '' : '<p class="error" role="status">目前離線，暫停送出。請恢復連線後再試。</p>'}${busy ? `<p role="status">${busyAction === 'delete' ? '正在刪除…' : '正在處理，等待伺服器確認…'}</p>` : ''}${loading ? '<section class="panel"><p role="status">正在連線房間…</p></section>' : teacher ? teacherView() : studentView()}</main><footer><span>國三國文・課堂練習</span><a href="?demo=1">本機示範</a></footer>`;
+  if (teacher) appRoot.innerHTML = markup; else renderStudentMarkup(appRoot, markup);
   restoreDetails();
   if (currentCode !== undefined) { const input = appRoot.querySelector<HTMLInputElement>('#code'); if (input) input.value = currentCode; }
   if (nickname !== undefined) { const input = appRoot.querySelector<HTMLInputElement>('#nick'); if (input) input.value = nickname; }
@@ -124,12 +148,69 @@ function render() {
   if (shareOpen) { const details = appRoot.querySelector<HTMLDetailsElement>('.share-qr-details'); if (details) details.open = true; }
   if (explanationOpen && focusedQuestion === appRoot.querySelector('[data-question]')?.getAttribute('data-question')) { const details = appRoot.querySelector<HTMLDetailsElement>('.feedback details'); if (details) details.open = true; }
   if (!document.querySelector('dialog[open]') && focusedAction && /^[a-z0-9-]+$/.test(focusedAction)) (appRoot.querySelector<HTMLElement>(`[data-action="${focusedAction}"]:not(:disabled)`) ?? appRoot.querySelector<HTMLElement>('.room-core [data-action]:not(:disabled),.room-core h2'))?.focus({ preventScroll: true });
+  if (restoreChestFocus) {
+    restoreChestFocus = false;
+    if (document.activeElement === document.body) {
+      appRoot.querySelector<HTMLElement>('.question .chest-grid button:not(:disabled), .question .chest-result button:not(:disabled), .question [data-action=next]:not(:disabled)')?.focus({ preventScroll: true });
+    }
+  }
   const canvas = appRoot.querySelector('canvas'); if (canvas) paintLandscape(canvas);
   if (focusedChoice && /^[0-3]$/.test(focusedChoice)
     && focusedQuestion === appRoot.querySelector('[data-question]')?.getAttribute('data-question')) {
     appRoot.querySelector<HTMLButtonElement>(`[data-choice="${focusedChoice}"]:not(:disabled)`)?.focus({ preventScroll: true });
   }
 }
+function savedChestMatches(request: ChestRequest, chest: CloudAnswer['chest'] | undefined) {
+  return Boolean(chest && (request.action.startsWith('open-') || chest.settled));
+}
+
+async function checkChest(current: Classroom, request: ChestRequest) {
+  request.phase = 'checking';
+  request.checkAfterCurrent = false;
+  render();
+  try {
+    const saved = await current.readSavedChest(request.roomId, request.questionId);
+    if (chestRequest !== request) return;
+    if (savedChestMatches(request, saved)) request.phase = 'saving';
+    else {
+      chestRequest = null;
+      chestError = { questionId: request.questionId, message: request.error + ' 可再次操作。' };
+      restoreChestFocus = request.returnFocus;
+    }
+  } catch {
+    if (chestRequest !== request) return;
+    request.phase = 'unconfirmed';
+    if (request.checkAfterCurrent && reconcileChest(current)) return;
+  }
+  render();
+}
+
+function reconcileChest(current: Classroom) {
+  if (!chestRequest || !navigator.onLine || room?.status !== 'running' || remainingTime(room) <= 0) return false;
+  if (chestRequest.phase === 'checking') chestRequest.checkAfterCurrent = true;
+  if (chestRequest.phase !== 'unconfirmed') return false;
+  void checkChest(current, chestRequest);
+  return true;
+}
+
+async function requestChest(current: Classroom, roomId: string, questionId: string, action: string) {
+  const focused = document.activeElement;
+  const returnFocus = focused instanceof HTMLButtonElement && focused.dataset.action === action;
+  const request: ChestRequest = { roomId, questionId, action, phase: 'saving', error: '', returnFocus, checkAfterCurrent: false };
+  chestRequest = request;
+  chestError = null;
+  render();
+  try {
+    if (action.startsWith('open-')) await current.openChest(roomId, questionId, Number(action.slice(5)));
+    else await current.claimChest(roomId, questionId, action === 'claim' ? null : action.slice(7));
+  } catch (error) {
+    if (chestRequest !== request) return;
+    request.error = cloudError(error);
+    if (navigator.onLine) await checkChest(current, request);
+    else { request.phase = 'unconfirmed'; render(); }
+  }
+}
+
 function openRoom(target: CloudRoom) {
   stopRoom();
   room = target; code = target.code;
@@ -159,9 +240,22 @@ function openRoom(target: CloudRoom) {
       if (teacher) { stopRoom(); room = value; render(); } else unavailableRoom();
       return;
     }
-    room = value; render();
+    const resumed = room?.status === 'paused' && value.status === 'running';
+    room = value;
+    if (!resumed || !reconcileChest(current)) render();
   }, failure));
-  if (!teacher && target.rulesVersion === 2) roomStops.push(current.watchScores(target.id, value => { if (active()) { peers = value; render(); } }, failure));
+  if (!teacher && target.rulesVersion === 2) roomStops.push(current.watchScores(target.id, value => {
+    if (!active()) return;
+    const before = peers.find(peer => peer.id === current.uid);
+    const operation = value.find(peer => peer.id === current.uid)?.lastOperation;
+    if (before && operation && operation.actor !== current.uid
+      && (operation.actor !== before.lastOperation?.actor || operation.id !== before.lastOperation.id)) {
+      const attacker = value.find(peer => peer.id === operation.actor);
+      if (attacker) notifyAttack(attacker.nickname);
+    }
+    peers = value;
+    render();
+  }, failure));
   roomStops.push(current.watchLeaderboard(target.id, value => { if (active()) { leaderboard = value; render(); } }, failure));
   if (teacher) {
     let latest: CloudPlayer[] | null = null, published = '', lastPublished = Date.now(), publishing = false;
@@ -185,12 +279,17 @@ function openRoom(target: CloudRoom) {
     if (!active()) return;
     const oldId = player?.order[cursor ?? 0];
     player = value; answers = saved;
+    if (chestRequest && savedChestMatches(chestRequest, saved[chestRequest.questionId]?.chest)) {
+      restoreChestFocus = chestRequest.returnFocus;
+      chestRequest = null;
+      chestError = null;
+    }
     if (cursor === null || cursor > value.completedCount) cursor = restoreCursor(value.completedCount);
     // Another tab may have advanced farther. Recover its last committed answer.
     if (value.completedCount > cursor + 1) cursor = restoreCursor(value.completedCount);
     if (oldId !== value.order[cursor]) selected = -1;
     render();
-  }, failure));
+  }, failure, () => { if (active()) reconcileChest(current); }));
   render();
 }
 async function authorize() {
@@ -291,6 +390,16 @@ appRoot.addEventListener('click', e => {
   const questionId = target.closest('[data-question]')?.getAttribute('data-question');
   // Capture the displayed answer before a snapshot can change UI state.
   const selectedChoice = selected;
+  if (!teacher && action === 'check-chest' && classroom && chestRequest?.phase === 'unconfirmed') {
+    void checkChest(classroom, chestRequest);
+    return;
+  }
+  if (!teacher && isChestAction(action)) {
+    if (!chestRequest && classroom && room?.status === 'running' && remainingTime(room) > 0 && questionId && navigator.onLine) {
+      void requestChest(classroom, room.id, questionId, action);
+    }
+    return;
+  }
   busy = true; busyAction = action; message = ''; render();
   void (async () => {
     try {
@@ -303,8 +412,6 @@ appRoot.addEventListener('click', e => {
         else if (room && teacher && (action === 'running' || action === 'paused' || action === 'ended' || action === 'archived')) await classroom.setStatus(room.id, action);
         else if (room && player && questionId) {
           if (action === 'answer') await classroom.submitAnswer(room.id, questionId, selectedChoice);
-          else if (action.startsWith('open-')) await classroom.openChest(room.id, questionId, Number(action.slice(5)));
-          else if (action === 'claim' || action.startsWith('target-')) await classroom.claimChest(room.id, questionId, action === 'claim' ? null : action.slice(7));
           else if (action === 'next') {
             const answer = answers[questionId];
             if (!answer || (answer.correct ? !answer.chest?.settled : (player.cooldownUntil ?? Infinity) > Date.now())) return;
@@ -335,7 +442,9 @@ const clock = setInterval(() => {
   }
   if (!teacher && room.status === 'running' && left === 0 && !appRoot.querySelector('.result')) render();
 }, 250);
-window.addEventListener('online', render);
+window.addEventListener('online', () => {
+  if (!classroom || !reconcileChest(classroom)) render();
+});
 window.addEventListener('offline', render);
 window.addEventListener('pagehide', () => { clearInterval(clock); stopRoom(); identityStops.forEach(stop => stop()); stopAuth(); });
 render();

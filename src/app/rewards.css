@@ -5,7 +5,29 @@
 .chest-pixel::after { content: ''; position: absolute; width: 12px; height: 18px; background: #f1cb55; border: 3px solid #684d32; left: 20px; top: 14px; }
 .chest-result { padding: 1rem; background: #fff4d7; border: 2px solid #b98c3a; }
 .freeze { padding: 1rem; background: #f8e4df; font-weight: 700; }
-.target-list { display: flex; flex-wrap: wrap; gap: .7rem; margin: 1rem 0; }
+.target-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 10rem), 1fr)); gap: .7rem; margin: 1rem 0; }
+.target-list button { min-width: 0; flex-direction: column; gap: .25rem; overflow-wrap: anywhere; }
+.target-score { display: block; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .duration-control { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
 .duration-control input { width: 90px; }
 @media (max-width: 480px) { .chest-grid { gap: .4rem; } .chest-box { min-height: 115px; } }
+.chest-feedback { min-height: 2.25rem; margin-top: .65rem; }
+.chest-feedback p { margin: 0; font-weight: 700; }
+.chest-feedback button { margin-top: .4rem; }
+[data-chest-selected] { outline: 3px solid #795118; outline-offset: 2px; }
+.attack-notice {
+  position: fixed;
+  z-index: 2;
+  inset: auto max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) auto;
+  max-width: min(26rem, calc(100% - 2rem));
+  margin: 0;
+  pointer-events: none;
+}
+.attack-notice:not(:empty) {
+  background: #fff4d7;
+  border: 2px solid #795118;
+  box-shadow: 3px 3px #c9b387;
+  padding: .7rem 1rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}

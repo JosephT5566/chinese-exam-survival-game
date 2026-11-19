@@ -16,7 +16,8 @@ export interface CloudPlayer {
   cooldownUntil: number | null; pendingId: string | null;
 }
 export interface CloudAnswer extends Answer { ordinal: number; points: number }
-export interface PublicScore { id: string; nickname: string; score: number }
+export interface ScoreOperation { actor: string; id: string }
+export interface PublicScore { id: string; nickname: string; score: number; lastOperation: ScoreOperation | null }
 export interface RankEntry { nickname: string; score: number }
 export interface Leaderboard { entries: RankEntry[]; updatedAt: Timestamp }
 export function object(value: unknown): value is Record<string, unknown> {
@@ -53,7 +54,11 @@ export function parseRoom(id: string, value: unknown): CloudRoom {
 export function parseScore(id: string, value: unknown): PublicScore {
   if (!object(value) || Object.keys(value).length !== 3 || typeof value.nickname !== 'string'
     || !integer(value.score, 96_000) || !('lastOperation' in value)) return bad();
-  return { id, nickname: value.nickname, score: value.score };
+  const operation = value.lastOperation;
+  const base = { id, nickname: value.nickname, score: value.score };
+  if (operation === null) return { ...base, lastOperation: null };
+  if (!object(operation) || typeof operation.actor !== 'string' || typeof operation.id !== 'string') return bad();
+  return { ...base, lastOperation: { actor: operation.actor, id: operation.id } };
 }
 export function parsePlayer(id: string, value: unknown, publicScore?: PublicScore): CloudPlayer {
   if (!object(value) || typeof value.nickname !== 'string' || !(value.joinedAt instanceof Timestamp)

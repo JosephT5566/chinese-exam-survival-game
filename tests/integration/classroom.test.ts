@@ -203,6 +203,33 @@ describe('real classroom adapter against Auth, Firestore and rules', () => {
     expect((await student.classroom.resumeRoom(room.code))?.room.status).toBe('archived');
   });
 
+  it('publishes the updated score with the first settled chest snapshot', async () => {
+    const { teacher, room, students } = await fixture(1);
+    const student = students[0]!;
+    await teacher.classroom.setStatus(room.id, 'running');
+    const id = await prepareChest(room.id, student, { kind: 'gain', amount: 50 });
+    let signalReady = () => {};
+    let signalSettled = (_score: number) => {};
+    let reportError = (_error: unknown) => {};
+    const ready = new Promise<void>(resolve => { signalReady = resolve; });
+    const settled = new Promise<number>((resolve, reject) => {
+      signalSettled = resolve;
+      reportError = reject;
+    });
+    const stop = student.actor.classroom.watchProgress(room.id, (player, answers) => {
+      const chest = answers[id]?.chest;
+      if (chest?.settled) signalSettled(player.totalScore);
+      else if (chest?.outcome.kind === 'gain' && chest.outcome.amount === 50) signalReady();
+    }, reportError);
+    try {
+      await ready;
+      await student.actor.classroom.claimChest(room.id, id);
+      expect(await settled).toBe(50);
+    } finally {
+      stop();
+    }
+  });
+
   it.each(['steal', 'swap'] as const)('settles concurrent %s transactions atomically using current target scores', async kind => {
     const { teacher, room, students } = await fixture(3);
     const first = students[0]!, second = students[1]!, target = students[2]!;
