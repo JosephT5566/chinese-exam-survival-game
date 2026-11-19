@@ -76,25 +76,32 @@ export function renderStudentMarkup(root: HTMLElement, markup: string) {
 
 let noticeTimer: number | undefined;
 let noticeFrame: number | undefined;
+const pendingAttackNames: string[] = [];
 
 export function clearAttackNotice() {
   window.clearTimeout(noticeTimer);
   if (noticeFrame !== undefined) window.cancelAnimationFrame(noticeFrame);
+  noticeFrame = undefined;
+  pendingAttackNames.length = 0;
   document.querySelector('[data-attack-notice]')?.remove();
 }
 
 export function notifyAttack(nickname: string) {
+  pendingAttackNames.push(nickname);
+  if (noticeFrame !== undefined) return;
+
   const notice = document.querySelector('[data-attack-notice]') ?? document.createElement('p');
   notice.className = 'attack-notice';
   notice.setAttribute('data-attack-notice', '');
   notice.setAttribute('role', 'status');
   if (!notice.isConnected) document.body.append(notice);
   notice.textContent = '';
-  // Leave the live region mounted before announcing, including consecutive attacks by one player.
+  // Batch attacks received before the live region's next announcement.
   window.clearTimeout(noticeTimer);
-  if (noticeFrame !== undefined) window.cancelAnimationFrame(noticeFrame);
   noticeFrame = requestAnimationFrame(() => {
-    notice.textContent = `${nickname}對你使用了寶箱效果。`;
+    noticeFrame = undefined;
+    const attackers = pendingAttackNames.splice(0).join('、');
+    notice.textContent = `${attackers}對你使用了寶箱效果。`;
     noticeTimer = window.setTimeout(() => { notice.textContent = ''; }, 8_000);
   });
 }

@@ -153,7 +153,7 @@ function teacherPage(room: Room) {
 function summary(p: Player) {
   const entries = Object.entries(p.answers),
     wrong = entries.filter(([, a]) => !a.correct);
-  return `<section class="panel result"><div class="mini-icon">${icon("trophy")}</div><h2>冒險結算</h2><div class="stats"><div><small>最終得分</small><strong>${score(p)}</strong></div><div><small>完成題數</small><strong>${entries.length} / 40</strong></div><div><small>答對</small><strong>${entries.length - wrong.length} 題</strong></div></div>${wrong.some(([, a]) => !a.viewed) ? "<p>活動已結束，仍可閱讀詳解。閱讀詳解不加分。</p>" : ""}<h3>錯題回顧</h3>${
+  return `<section class="panel result"><div class="mini-icon">${icon("trophy")}</div><h2>冒險結算</h2><div class="stats"><div><small>最終得分</small><strong>${score(p)}</strong></div><div><small>已保存題數</small><strong>${entries.length} / 40</strong></div><div><small>答對</small><strong>${entries.length - wrong.length} 題</strong></div></div>${wrong.some(([, a]) => !a.viewed) ? "<p>活動已結束，仍可閱讀詳解。閱讀詳解不加分。</p>" : ""}<h3>錯題回顧</h3>${
     wrong.length
       ? wrong
           .map(([id, a]) => {
@@ -186,7 +186,7 @@ function chestPanel(room: Room, p: Player, id: string) {
   return `<div class="chest-result"><strong>寶箱 ${chest.box + 1}：${label}</strong>${chest.settled ? `<p role="status">${chest.fallback ? "目前沒有其他玩家，改獲得 20 分。" : "已結算"} 本次 ${chest.delta >= 0 ? "+" : ""}${chest.delta} 分</p>` : needsTarget && peers.length ? `<p>選擇對象，確認後立即結算。</p><div class="target-list">${peers.map((other) => rewardButton("target-" + other.id, targetLabel(html(other.nickname), score(other)), "secondary")).join("")}</div>` : `<p>${needsTarget ? "目前只有你一人，改獲得 20 分。" : "確認後結算本次分數。"}</p>${rewardButton("claim", "確認領取")}`}</div>${status}${chest.settled ? button("next", p.cursor === 39 ? "查看結算 →" : "下一題 →") : ""}`;
 }
 function studentPage(room: Room, p: Player) {
-  const done = Object.keys(p.answers).length;
+  const savedCount = Object.keys(p.answers).length;
   let content = "";
   if (room.status === "ended" || remainingTime(room) === 0 || p.cursor >= 40 || (p.finishedAt !== null && p.finishedAt <= Date.now())) content = summary(p);
   else if (room.status !== "running")
@@ -197,7 +197,7 @@ function studentPage(room: Room, p: Player) {
       a = p.answers[id];
     content = `<section class="panel question" data-question="${html(id)}"><p class="eyebrow">第 ${p.cursor + 1} / 40 題　·　${html(q.sectionId)}</p><h2>${html(q.stem)}</h2><div class="choices" role="radiogroup" aria-label="答案選項">${p.choices[id]!.map((original, i) => `<button type="button" class="choice ${a ? (original === q.correctChoiceIndex ? "right" : a.selected === i ? "wrong" : "") : selected === i ? "chosen" : ""}" role="radio" data-choice="${i}" aria-checked="${a ? a.selected === i : selected === i}" tabindex="${i === Math.max(0, selected) ? 0 : -1}" ${a ? "disabled" : ""}><b>${"ABCD"[i]}</b>${html(q.choices[original]!)}${a && original === q.correctChoiceIndex ? " ✓" : a?.selected === i ? " ×" : ""}</button>`).join("")}</div>${a ? `<div class="feedback"><strong>${a.correct ? "答對了！選一個命運寶箱" : "這題答錯了"}</strong><details ${a.viewed ? "open" : ""}><summary>閱讀詳解（不加分）</summary><p>${html(q.explanation)}</p></details></div>${a.correct ? chestPanel(room, p, id) : p.cooldownUntil !== null && Date.now() < p.cooldownUntil ? `<p class="freeze" role="status">暫停 ${Math.ceil((p.cooldownUntil - Date.now()) / 1000)} 秒，看看詳解再出發。</p>` : button("next", p.cursor === 39 ? "查看結算 →" : "下一題 →")}` : '<button type="button" class="primary" data-action="answer" ' + (selected < 0 ? "disabled" : "") + ">送出答案 →</button>"}</section>`;
   }
-  return `<div class="section-head"><div><p class="eyebrow">房間 ${room.code}　／　${html(p.nickname)}</p><h1>我的冒險手冊</h1></div>${button("ranks", showRanks ? "收起排名" : "全班排名", "secondary")}</div>${timer(room)}<div class="progress"><span style="width:${(done / 40) * 100}%"></span></div><p class="progress-label">已完成 ${done} / 40 題 <b>${score(p)} 分</b></p><div>${showRanks ? ranks(room) : ""}</div>${content}`;
+  return `<div class="section-head"><div><p class="eyebrow">房間 ${room.code}　／　${html(p.nickname)}</p><h1>我的冒險手冊</h1></div>${button("ranks", showRanks ? "收起排名" : "全班排名", "secondary")}</div>${timer(room)}<div class="progress"><span style="width:${(savedCount / 40) * 100}%"></span></div><p class="progress-label">已保存 ${savedCount} / 40 題 <b>${score(p)} 分</b></p><div>${showRanks ? ranks(room) : ""}</div>${content}`;
 }
 function render() {
   const restoreDetails = preserveDetails(root);

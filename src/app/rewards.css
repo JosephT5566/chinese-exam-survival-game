@@ -6,7 +6,7 @@
 .chest-result { padding: 1rem; background: #fff4d7; border: 2px solid #b98c3a; }
 .freeze { padding: 1rem; background: #f8e4df; font-weight: 700; }
 .target-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 10rem), 1fr)); gap: .7rem; margin: 1rem 0; }
-.target-list button { min-width: 0; overflow-wrap: anywhere; }
+.target-list button { min-width: 0; flex-direction: column; gap: .25rem; overflow-wrap: anywhere; }
 .target-score { display: block; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .duration-control { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
 .duration-control input { width: 90px; }
