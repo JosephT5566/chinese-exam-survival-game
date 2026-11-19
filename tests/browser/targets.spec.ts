@@ -34,7 +34,7 @@ test('students select a peer for steal and swap, and time expires with teacher o
   await popup.getByText('Add new account').click();
   await popup.locator('#email-input').fill(email);
   await popup.getByRole('button', { name: 'Sign in with Google.com', exact: true }).click();
-  await teacher.getByRole('button', { name: '建立教室' }).click();
+  await teacher.getByRole('button', { name: '建立房間' }).click();
   const link = await teacher.locator('[data-share-url]').inputValue();
   for (const [page, name] of [[student, '寶箱玩家'], [peer, '目標玩家']] as const) {
     await page.goto(link);

@@ -365,3 +365,62 @@ describe('real classroom adapter against Auth, Firestore and rules', () => {
     expect(recovered.revision).toBe(42);
   });
 });
+
+describe('resumable room deletion with the real SDK', () => {
+  it('drains multiple batches and legacy child data, protects another room and confirms repeated completion', async () => {
+    const { teacher, room, students } = await fixture(1);
+    const other = await teacher.classroom.createRoom();
+    const uid = students[0]!.actor.uid;
+    await env.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      const batch = db.batch();
+      for (let i = 0; i < 45; i++) batch.set(db.doc(`rooms/${room.id}/players/${uid}/events/${i}`), { old: true });
+      batch.set(db.doc(`rooms/${room.id}/scores/orphan`), { malformed: true });
+      batch.set(db.doc(`rooms/${room.id}/players/${uid}/answers/old`), { malformed: true });
+      await batch.commit();
+    });
+    await teacher.classroom.beginDeletion(room.id, room.code);
+    expect((await getDocFromServer(doc(teacher.db, `rooms/${room.id}`))).data()?.status).toBe('deleting');
+    await expect(students[0]!.actor.classroom.joinRoom(room.code, '小明')).rejects.toThrow();
+    await teacher.classroom.deleteRoom(room.id, room.code);
+    await teacher.classroom.deleteRoom(room.id, room.code);
+    expect((await getDocFromServer(doc(teacher.db, `retiredRoomCodes/${room.code}`))).data()?.state).toBe('completed');
+    await env.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      expect((await db.doc(`rooms/${room.id}`).get()).exists).toBe(false);
+      for (const path of ['players', 'scores', 'public', `players/${uid}/events`, `players/${uid}/answers`]) expect((await db.collection(`rooms/${room.id}/${path}`).get()).empty).toBe(true);
+      expect((await db.doc(`roomCodes/${room.code}`).get()).exists).toBe(false);
+      expect((await db.doc(`rooms/${other.id}`).get()).exists).toBe(true);
+    });
+  });
+  it('cleans a legacy running room with missing index and rejects a mismatched index', async () => {
+    const { teacher, room } = await fixture(0);
+    const other = await teacher.classroom.createRoom();
+    await env.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      const original = (await db.doc(`rooms/${room.id}`).get()).data();
+      if (!original) throw new Error('Missing fixture');
+      delete original.rulesVersion;
+      await db.doc(`rooms/${room.id}`).set({ ...original, status: 'running' });
+      await db.doc(`roomCodes/${room.code}`).set({ roomId: other.id, ownerUid: teacher.uid });
+    });
+    await expect(teacher.classroom.beginDeletion(room.id, room.code)).rejects.toThrow('索引不一致');
+    await env.withSecurityRulesDisabled(context => context.firestore().doc(`roomCodes/${room.code}`).delete());
+    await teacher.classroom.deleteRoom(room.id, room.code);
+    expect((await getDocFromServer(doc(teacher.db, `rooms/${other.id}`))).exists()).toBe(true);
+    expect((await getDocFromServer(doc(teacher.db, `retiredRoomCodes/${room.code}`))).data()?.state).toBe('completed');
+  });
+  it('rejects active rooms and converges concurrent cleanup after authorization is restored', async () => {
+    const { teacher, room } = await fixture(0);
+    await teacher.classroom.setStatus(room.id, 'running');
+    await expect(teacher.classroom.beginDeletion(room.id, room.code)).rejects.toThrow();
+    await teacher.classroom.setStatus(room.id, 'paused');
+    await expect(teacher.classroom.beginDeletion(room.id, room.code)).rejects.toThrow();
+    await teacher.classroom.setStatus(room.id, 'ended');
+    await teacher.classroom.beginDeletion(room.id, room.code);
+    await env.withSecurityRulesDisabled(context => context.firestore().doc('teacherEmails/teacher@example.test').set({ authorized: false }));
+    await expect(teacher.classroom.deleteRoom(room.id, room.code)).rejects.toThrow();
+    await env.withSecurityRulesDisabled(context => context.firestore().doc('teacherEmails/teacher@example.test').set({ authorized: true }));
+    await Promise.all([teacher.classroom.deleteRoom(room.id, room.code), teacher.classroom.deleteRoom(room.id, room.code)]);
+  });
+});

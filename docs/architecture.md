@@ -46,4 +46,6 @@ v2 必須依目前資料模型重算，包含每人最多 40 次開箱／結算�
 
 Spark MVP 的用戶端分數與隨機結果可被竄改，隨瀏覽器發送的答案可被檢視，不能當正式考試成績。transactions、已保存的寶箱結果與 rules 可限制一般重複開箱、結算及不合法轉移；無法證明抽選機率或答對判定誠實。
 
-老師手動刪除資料，建議 30 天內清理。刪 room 不會自動刪 Firestore 子集合；完整刪除工具及其測試尚待實作，現階段不提供不完整的刪除按鈕。
+老師手動刪除資料，建議 30 天內清理。`src/firebase/deletion.ts` 以 deleting 狀態凍結遊戲，分頁清理已知子集合後才刪 room，並以永久 `retiredRoomCodes` 紀錄支援重試及防止舊碼重用。規則不證明任意子集合已空，既存未知孤兒須由管理員處理。契約見 [Firestore contract](firestore-contract.md#可重試的房間刪除)。
+
+`src/app/room-controls.ts` 共用老師端狀態、刪除區及原生確認對話框；對話框位於視圖容器之外，避免訂閱重繪清除輸入。刪除中停止房間相關訂閱與 publisher，保留授權及房間清單訂閱。Demo 沿用每房間 Web Lock，先寫 tombstone 再清存檔與身分鍵，阻止包括 DEMO01 在內的舊操作重建資料。

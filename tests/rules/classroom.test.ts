@@ -492,3 +492,56 @@ describe('全班排名快照', () => {
     await assertSucceeds(snapshot(db, []));
   });
 });
+
+describe('room retirement and cleanup', () => {
+  function begin(db: Firestore) {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'rooms/r1'), { status: 'deleting', updatedAt: serverTimestamp() });
+    batch.set(doc(db, 'retiredRoomCodes/ABC123'), { roomId: 'r1', ownerUid: 't1', state: 'deleting' });
+    batch.delete(doc(db, 'roomCodes/ABC123'));
+    return batch.commit();
+  }
+  it('atomically retires a lobby code and grants cleanup only to its authorized owner', async () => {
+    await seed('rooms/r1', room('t1', 'lobby'));
+    await assertFails(begin(student()));
+    await assertFails(begin(teacher('t2')));
+    await assertFails(updateDoc(doc(teacher(), 'rooms/r1'), { status: 'deleting', updatedAt: serverTimestamp() }));
+    await assertSucceeds(begin(teacher()));
+    await assertFails(joinBatch(student('new')).commit());
+    await assertFails(answerBatch(student()).commit());
+    await assertFails(updateDoc(doc(teacher(), 'rooms/r1'), { status: 'ended', updatedAt: serverTimestamp() }));
+    await assertFails(deleteDoc(playerRef(student())));
+    await assertSucceeds(deleteDoc(answerRef(teacher())));
+    await assertSucceeds(deleteDoc(playerRef(teacher())));
+    await seed('teacherEmails/t1@example.test', { authorized: false });
+    await assertFails(deleteDoc(scoreRef(teacher())));
+  });
+  for (const status of ['running', 'paused']) it(`does not retire a v2 ${status} room`, async () => {
+    await seed('rooms/r1', room('t1', status));
+    await assertFails(begin(teacher()));
+    expect((await getDoc(doc(student(), 'roomCodes/ABC123'))).exists()).toBe(true);
+  });
+  it('allows readonly legacy cleanup without allowing unknown versions', async () => {
+    const { rulesVersion: _version, ...legacy } = room();
+    await seed('rooms/r1', legacy);
+    await assertSucceeds(begin(teacher()));
+    await seed('rooms/r1', { ...room(), rulesVersion: 3 });
+    await assertFails(begin(teacher()));
+  });
+  it('requires durable completion with final deletion and prevents reuse of a retired code', async () => {
+    await seed('rooms/r1', room('t1', 'ended'));
+    await assertSucceeds(begin(teacher()));
+    await assertFails(deleteDoc(doc(teacher(), 'rooms/r1')));
+    const db = teacher();
+    const final = writeBatch(db);
+    final.delete(doc(db, 'rooms/r1'));
+    final.update(doc(db, 'retiredRoomCodes/ABC123'), { state: 'completed' });
+    await assertSucceeds(final.commit());
+    expect((await getDoc(doc(teacher(), 'retiredRoomCodes/ABC123'))).data()?.state).toBe('completed');
+    await assertFails(deleteDoc(doc(teacher(), 'retiredRoomCodes/ABC123')));
+    const recreate = writeBatch(db);
+    recreate.set(doc(db, 'rooms/reused'), { ...room('t1', 'lobby'), playerCount: 0, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), startedAt: null });
+    recreate.set(doc(db, 'roomCodes/ABC123'), { roomId: 'reused', ownerUid: 't1' });
+    await assertFails(recreate.commit());
+  });
+});

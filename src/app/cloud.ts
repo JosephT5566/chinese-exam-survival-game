@@ -1,3 +1,4 @@
+import { roomLabels, managementLocked, canDelete, controlButton, deletionSection, confirmRoomDeletion, preserveDetails, runningHint } from './room-controls';
 import { GoogleAuthProvider, onAuthStateChanged, signInAnonymously, signInWithPopup, signOut } from 'firebase/auth';
 import { Classroom, cloudError } from '../firebase/classroom';
 import { createRuntime } from '../firebase/runtime';
@@ -24,9 +25,11 @@ let peers: PublicScore[] = [];
 const viewedCorrect = new Set<string>();
 let roomStops: (() => void)[] = [], identityStops: (() => void)[] = [], epoch = 0, identityEpoch = 0;
 let publisher: ReturnType<typeof setInterval> | undefined;
-const labels = { lobby: '等待開始', running: '闖關中', paused: '已暫停', ended: '已結束', archived: '已封存' };
+const labels = roomLabels;
+let busyAction = '';
+let unavailable = '';
 const escape = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c);
-const button = (action: string, label: string, kind = 'primary') => `<button type="button" class="${kind}" data-action="${action}" ${busy ? 'disabled' : ''}>${label}</button>`;
+const button = (action: string, label: string, kind = 'primary') => `<button type="button" class="${kind}" data-action="${action}" ${busy ? 'disabled' : ''}>${busy && busyAction === action ? (action === 'paused' ? '正在暫停…' : action === 'running' ? '正在恢復…' : action === 'ended' ? '正在結束…' : label) : label}</button>`;
 function url(role: 'teacher' | 'student', target = '') {
   const u = new URL(location.href);
   u.search = new URLSearchParams({ view: role, ...(target ? { room: target } : {}) }).toString();
@@ -57,9 +60,19 @@ function timer(value: CloudRoom) {
 }
 function teacherView() {
   const user = runtime.auth.currentUser;
-  if (!user || user.isAnonymous) return `<section class="panel waiting"><h1>老師登入</h1><p>使用已授權的 Google 帳號管理教室。</p>${button('login', '使用 Google 登入')}</section>`;
+  if (!user || user.isAnonymous) return `<section class="panel waiting"><h1>老師登入</h1><p>使用已授權的 Google 帳號管理房間。</p>${button('login', '使用 Google 登入')}</section>`;
   if (!authorized) return `<section class="panel"><h1>等待老師授權</h1><p>已使用 Google 帳號登入。</p><p>請將以下 email 提供給管理員，加入白名單後按「重新檢查授權」。</p><p><code>${escape(user.email ?? '')}</code></p><div class="actions">${button('reauthorize', '重新檢查授權')}${button('logout', '登出', 'secondary')}</div></section>`;
-  return `<div class="section-head"><div><p class="eyebrow">${escape(user.email ?? '')}</p><h1>老師控制台</h1></div><div class="actions">${button('new', '建立教室')}${button('logout', '登出', 'secondary')}</div></div><section class="panel"><h2>我的教室</h2>${rooms.length ? `<ul class="rank-list">${rooms.map(r => `<li><span>${escape(r.code)} · ${labels[r.status]}</span><button type="button" class="secondary" data-room="${escape(r.id)}" ${busy ? 'disabled' : ''}>${room?.id === r.id ? '目前教室' : '開啟教室'}</button></li>`).join('')}</ul>` : '<p>尚無教室，請先建立。</p>'}</section>${room ? `<div class="dashboard"><section class="panel"><h2>房間 ${escape(room.code)}</h2><p class="tag">${labels[room.status]}</p><div class="stats"><div><small>已加入</small><strong>${roster.length} / 30</strong></div></div>${roster.length > 30 ? '<p class="error">已超過 30 人，公開排名只顯示前 30 人，請結束並另開教室分流。</p>' : ''}${sharePanel(url('student', room.code))}${room.rulesVersion === 2 ? timer(room) : '<p>舊規則教室，僅供回顧。請建立新教室。</p>'}${room.rulesVersion === 2 && room.status === 'lobby' ? `<div class="duration-control"><label for="duration">活動時間（1–60 分鐘）</label><input id="duration" type="number" min="1" max="60" value="${room.durationMinutes}">${button('duration', '設定時間', 'secondary')}</div>` : ''}<div class="actions">${room.rulesVersion === 2 && (room.status === 'lobby' || (room.status === 'paused' && remainingTime(room) > 0)) ? button('running', room.status === 'lobby' ? '開始闖關' : '恢復作答') : ''}${room.rulesVersion === 2 && room.status === 'running' && remainingTime(room) > 0 ? button('paused', '暫停作答') : ''}${room.rulesVersion === 2 && ['lobby', 'running', 'paused'].includes(room.status) ? button('ended', '結束活動', 'secondary') : ''}${room.rulesVersion === 2 && room.status === 'ended' ? button('archived', '封存教室', 'secondary') : ''}</div></section>${rankings()}</div><section class="panel"><h2>玩家進度</h2><ul class="rank-list">${roster.map(p => `<li><span>${escape(p.nickname)}</span><strong>${p.completedCount} / 40 題</strong><small>${p.totalScore} 分</small></li>`).join('')}</ul></section>` : ''}`;
+  const locked = managementLocked(room?.status);
+  const modern = room?.rulesVersion === 2;
+  const header = `<div class="teacher-toolbar" ${room?.status === 'running' ? 'aria-describedby="running-hint"' : ''}><h1 tabindex="-1">老師控制台</h1><div class="actions">${controlButton('new', '建立房間', busy || locked)}${button('logout', '登出', 'secondary')}</div></div>`;
+  const list = `<details class="teacher-management" data-disclosure="rooms-${room?.status ?? 'none'}" ${room?.status === 'running' ? '' : 'open'}><summary>我的房間</summary>${rooms.length ? `<ul class="rank-list">${rooms.map(r => `<li><span>${escape(r.code)} · ${labels[r.status]}</span><button type="button" class="secondary" data-room="${escape(r.id)}" ${busy || locked || room?.id === r.id ? 'disabled' : ''}>${room?.id === r.id ? '目前房間' : '進入房間'}</button></li>`).join('')}</ul>` : '<p>尚無房間，請先建立。</p>'}<p class="teacher-email">${escape(user.email ?? '')}</p></details>`;
+  if (!room) return header + list;
+  const current = room;
+  const deleting = current.status === 'deleting';
+  const main = `<section class="panel room-core"><div class="room-summary"><h2 tabindex="-1">房間 ${escape(current.code)}</h2><span class="room-status tag ${current.status}">${labels[current.status]}</span></div>${deleting ? '<p role="status">房間已停止加入與遊戲。可繼續刪除剩餘紀錄。</p>' : `<div class="stats"><div><small>已加入</small><strong>${roster.length} / 30</strong></div><div><small>已完成</small><strong>${roster.filter(p => p.finishedAt !== null).length}</strong></div></div>${modern ? timer(current) : '<p>舊規則房間，僅供回顧。請建立新房間。</p>'}<div class="actions">${modern && (current.status === 'lobby' || (current.status === 'paused' && remainingTime(current) > 0)) ? button('running', current.status === 'lobby' ? '開始闖關' : '恢復作答') : ''}${modern && current.status === 'running' ? button('paused', '暫停作答') : ''}${modern && ['lobby', 'running', 'paused'].includes(current.status) ? button('ended', '結束活動', 'danger') : ''}</div>`}${current.status === 'running' ? `<p class="management-hint" id="running-hint">${runningHint}</p>` : ''}</section>`;
+  const management = `<details class="teacher-management" data-disclosure="management-${current.id}-${current.status}" ${current.status !== 'running' ? 'open' : ''}><summary>房間管理</summary>${deleting ? '' : `${sharePanel(url('student', current.code))}${modern ? `<div class="duration-control"><label for="duration">活動時間（1–60 分鐘）</label><input id="duration" type="number" min="1" max="60" value="${current.durationMinutes}" ${busy || current.status !== 'lobby' ? 'disabled' : ''}>${controlButton('duration', '設定時間', busy || current.status !== 'lobby')}</div>` : ''}${current.status === 'ended' && modern ? button('archived', '封存房間', 'secondary') : ''}`}${deletionSection(current.code, current.status, busy || !canDelete(current.status, !modern))}</details>`;
+  const progress = deleting ? '' : `<section class="panel"><h2>玩家進度</h2>${roster.length ? `<ul class="rank-list">${roster.map(p => `<li><span>${escape(p.nickname)}</span><strong>${p.completedCount} / 40 題</strong><small>${p.totalScore} 分</small></li>`).join('')}</ul>` : '<p class="empty">還沒有玩家。</p>'}</section><details class="teacher-ranks" data-disclosure="ranks-${current.id}"><summary>全班排行榜</summary>${rankings()}</details>`;
+  return header + main + progress + management + list;
 }
 function review(p: CloudPlayer) {
   const wrong = p.order.filter(id => answers[id] && !answers[id]?.correct);
@@ -77,12 +90,12 @@ function chestPanel(p: CloudPlayer, id: string) {
   return `<div class="chest-result" role="status"><strong>寶箱 ${chest.box + 1}：${label}</strong>${chest.settled ? `<p>${chest.fallback ? '目前沒有其他玩家，改獲得 20 分。' : '已結算'} 本次 ${chest.delta >= 0 ? '+' : ''}${chest.delta} 分</p>` : needsTarget && room && room.playerCount > 1 ? `<p>選擇對象，確認後立即結算。</p><div class="target-list">${others.map(peer => button('target-' + peer.id, `${escape(peer.nickname)} · ${peer.score} 分`, 'secondary')).join('')}</div>${others.length ? '' : '<p>正在讀取同房玩家…</p>'}` : `<p>${needsTarget ? '目前只有你一人，改獲得 20 分。' : '確認後結算本次分數。'}</p>${button('claim', '確認領取')}`}</div>${chest.settled ? button('next', cursor === 39 ? '查看結算 →' : '下一題 →') : ''}`;
 }
 function studentView() {
-  if (!room) return landing();
+  if (!room) return unavailable ? `<section class="panel"><h1>房間無法繼續使用</h1><p role="status">${escape(unavailable)}</p><a class="secondary" href="${escape(url('student'))}">返回學生入口</a></section>` : landing();
   if (!player) return '<section class="panel"><p role="status">正在讀取已保存的進度…</p></section>';
   const p = player;
   let content: string;
   const id = p.order[cursor ?? 0], q = id ? questions.get(id) : undefined, a = id ? answers[id] : undefined;
-  if (room.rulesVersion !== 2 || room.status === 'ended' || room.status === 'archived' || summaryVisible || (room.status === 'running' && remainingTime(room) <= 0)) content = `${room.rulesVersion !== 2 ? '<p>這是舊規則教室，僅供回顧；請老師建立新教室。</p>' : ''}${review(p)}`;
+  if (room.rulesVersion !== 2 || room.status === 'ended' || room.status === 'archived' || summaryVisible || (room.status === 'running' && remainingTime(room) <= 0)) content = `${room.rulesVersion !== 2 ? '<p>這是舊規則房間，僅供回顧；請老師建立新房間。</p>' : ''}${review(p)}`;
   else if (room.status === 'lobby') content = '<section class="panel waiting"><h2>已入座，等待老師開始</h2><p>老師開始活動後即可作答。</p></section>';
   else if (room.status === 'paused') content = `<section class="panel waiting"><h2>老師已暫停活動</h2><p>進度已保存，恢復後可繼續作答。</p></section>${a && q ? `<section class="panel"><h3>${escape(q.stem)}</h3><details><summary>閱讀詳解（不加分）</summary><p>${escape(q.explanation)}</p></details></section>` : ''}`;
   else if (id && q) {
@@ -92,6 +105,7 @@ function studentView() {
   return `<div class="section-head"><div><p class="eyebrow">房間 ${escape(room.code)} ／ ${escape(p.nickname)}</p><h1>我的冒險手冊</h1></div>${button('ranks', showRanks ? '收起排名' : '全班排名', 'secondary')}</div>${room.rulesVersion === 2 ? timer(room) : ''}<div class="progress"><span style="width:${p.completedCount / 40 * 100}%"></span></div><p class="progress-label">已保存 ${p.completedCount} / 40 題 <b>${p.totalScore} 分</b></p>${showRanks ? rankings() : ''}${content}`;
 }
 function render() {
+  const restoreDetails = preserveDetails(appRoot);
   const focused = document.activeElement;
   const focusedChoice = focused instanceof HTMLButtonElement ? focused.dataset.choice : undefined;
   const focusedAction = focused instanceof HTMLButtonElement ? focused.dataset.action : undefined;
@@ -102,13 +116,14 @@ function render() {
   const duration = appRoot.querySelector<HTMLInputElement>('#duration')?.value;
   const shareOpen = appRoot.querySelector<HTMLDetailsElement>('.share-qr-details')?.open;
   const explanationOpen = appRoot.querySelector<HTMLDetailsElement>('.feedback details')?.open;
-  appRoot.innerHTML = `<header><div class="bar"><a class="brand" href="${escape(url('student'))}">${icon('book')} 國文段考生存戰</a><nav aria-label="主要導覽"><a href="${escape(url('student', code))}">學生入口</a><a href="${escape(url('teacher'))}">老師控制台</a></nav></div></header><main><div class="crumb">教室大廳 / ${teacher ? '老師控制台' : '學生入口'}<strong>${runtime.emulators ? '本機模擬器' : '雲端教室'}</strong></div><p class="error" role="alert">${escape(message)}</p>${navigator.onLine ? '' : '<p class="error" role="status">目前離線，暫停送出。請恢復連線後再試。</p>'}${busy ? '<p role="status">正在處理，等待伺服器確認…</p>' : ''}${loading ? '<section class="panel"><p role="status">正在連線教室…</p></section>' : teacher ? teacherView() : studentView()}</main><footer><span>國三國文・課堂練習</span><a href="?demo=1">本機示範</a></footer>`;
+  appRoot.innerHTML = `<header><div class="bar"><a class="brand" href="${escape(url('student'))}">${icon('book')} 國文段考生存戰</a><nav aria-label="主要導覽"><a href="${escape(url('student', code))}">學生入口</a><a href="${escape(url('teacher'))}">老師控制台</a></nav></div></header><main><div class="crumb">房間大廳 / ${teacher ? '老師控制台' : '學生入口'}<strong>${runtime.emulators ? '本機模擬器' : '雲端房間'}</strong></div><p class="error" role="alert">${escape(message)}</p>${navigator.onLine ? '' : '<p class="error" role="status">目前離線，暫停送出。請恢復連線後再試。</p>'}${busy ? `<p role="status">${busyAction === 'delete' ? '正在刪除…' : '正在處理，等待伺服器確認…'}</p>` : ''}${loading ? '<section class="panel"><p role="status">正在連線房間…</p></section>' : teacher ? teacherView() : studentView()}</main><footer><span>國三國文・課堂練習</span><a href="?demo=1">本機示範</a></footer>`;
+  restoreDetails();
   if (currentCode !== undefined) { const input = appRoot.querySelector<HTMLInputElement>('#code'); if (input) input.value = currentCode; }
   if (nickname !== undefined) { const input = appRoot.querySelector<HTMLInputElement>('#nick'); if (input) input.value = nickname; }
   if (duration !== undefined && focused?.id === 'duration') { const input = appRoot.querySelector<HTMLInputElement>('#duration'); if (input) { input.value = duration; input.focus(); } }
   if (shareOpen) { const details = appRoot.querySelector<HTMLDetailsElement>('.share-qr-details'); if (details) details.open = true; }
   if (explanationOpen && focusedQuestion === appRoot.querySelector('[data-question]')?.getAttribute('data-question')) { const details = appRoot.querySelector<HTMLDetailsElement>('.feedback details'); if (details) details.open = true; }
-  if (focusedAction && /^[a-z0-9-]+$/.test(focusedAction)) appRoot.querySelector<HTMLButtonElement>(`[data-action="${focusedAction}"]:not(:disabled)`)?.focus({ preventScroll: true });
+  if (!document.querySelector('dialog[open]') && focusedAction && /^[a-z0-9-]+$/.test(focusedAction)) (appRoot.querySelector<HTMLElement>(`[data-action="${focusedAction}"]:not(:disabled)`) ?? appRoot.querySelector<HTMLElement>('.room-core [data-action]:not(:disabled),.room-core h2'))?.focus({ preventScroll: true });
   const canvas = appRoot.querySelector('canvas'); if (canvas) paintLandscape(canvas);
   if (focusedChoice && /^[0-3]$/.test(focusedChoice)
     && focusedQuestion === appRoot.querySelector('[data-question]')?.getAttribute('data-question')) {
@@ -123,8 +138,29 @@ function openRoom(target: CloudRoom) {
   if (!current) return;
   const generation = epoch;
   const active = () => generation === epoch;
-  const failure = (e: unknown) => { if (active()) report(e); };
-  roomStops.push(current.watchRoom(target.id, value => { if (active()) { room = value; render(); } }, failure));
+  const unavailableRoom = () => {
+    stopRoom(); unavailable = '房間正在刪除或已刪除，無法繼續活動。'; message = '';
+    if (teacher) { code = ''; history.replaceState(null, '', url('teacher')); }
+    render();
+  };
+  const failure = (e: unknown) => {
+    if (!active()) return;
+    void current.isRoomRetired(target.id, target.code).then(retired => {
+      if (!active()) return;
+      if (retired) { if (teacher) { stopRoom(); room = { ...target, status: 'deleting' }; render(); } else unavailableRoom(); }
+      else report(e);
+    }).catch(() => { if (active()) report(e); });
+  };
+  if (target.status === 'deleting') { render(); return; }
+  roomStops.push(current.watchRoom(target.id, value => {
+    if (!active()) return;
+    if (!value) { unavailableRoom(); return; }
+    if (value.status === 'deleting') {
+      if (teacher) { stopRoom(); room = value; render(); } else unavailableRoom();
+      return;
+    }
+    room = value; render();
+  }, failure));
   if (!teacher && target.rulesVersion === 2) roomStops.push(current.watchScores(target.id, value => { if (active()) { peers = value; render(); } }, failure));
   roomStops.push(current.watchLeaderboard(target.id, value => { if (active()) { leaderboard = value; render(); } }, failure));
   if (teacher) {
@@ -173,9 +209,11 @@ async function authorize() {
   identityStops.push(current.watchAuthorization(allowed => {
     if (!allowed) revoked(new Error('老師授權已撤銷，請聯絡管理員。'));
   }, revoked));
-  identityStops.push(current.watchRooms(value => {
+  identityStops.push(current.watchRooms((value, unreadable) => {
     if (generation !== identityEpoch) return;
     rooms = value; loading = false;
+    if (unreadable) message = `${unreadable} 間房間的版本或資料無法辨識，請聯絡管理員；其他房間仍可使用。`;
+    if (room?.status === 'deleting' && !rooms.some(r => r.id === room?.id)) { stopRoom(); code = ''; message = '房間已刪除。'; history.replaceState(null, '', url('teacher')); }
     if (!room && code) { const target = rooms.find(r => r.code === code); if (target) openRoom(target); }
     render();
   }, revoked));
@@ -222,21 +260,38 @@ appRoot.addEventListener('keydown', e => {
 });
 appRoot.addEventListener('click', e => {
   const target = e.target instanceof Element ? e.target.closest('button') : null;
-  if (!target || busy) return;
+  if (!target || target.disabled || busy) return;
   if (target.dataset.choice !== undefined) {
     selected = Number(target.dataset.choice); render();
     appRoot.querySelector<HTMLButtonElement>(`[data-choice="${selected}"]`)?.focus(); return;
   }
+  if (target.dataset.room && managementLocked(room?.status)) return;
   if (target.dataset.room) { const next = rooms.find(r => r.id === target.dataset.room); if (next) openRoom(next); return; }
   const action = target.dataset.action;
   if (!action) return;
+  if (teacher && managementLocked(room?.status) && ['new', 'duration', 'archived'].includes(action)) return;
+  if (teacher && action === 'delete' && room && canDelete(room.status, room.rulesVersion === 1)) {
+    const target = room, current = classroom;
+    if (!current) return;
+    confirmRoomDeletion(target.code, () => !busy && room?.id === target.id && canDelete(room.status, room.rulesVersion === 1), async () => {
+      busy = true; busyAction = 'delete'; message = ''; render();
+      try {
+        await current.beginDeletion(target.id, target.code);
+        stopRoom(); room = { ...target, status: 'deleting' }; render();
+        await current.deleteRoom(target.id, target.code);
+        stopRoom(); code = ''; history.replaceState(null, '', url('teacher')); message = '房間已刪除。';
+      } catch (error) { message = cloudError(error); }
+      finally { busy = false; busyAction = ''; render(); appRoot.querySelector<HTMLElement>('[data-action=delete],h1')?.focus(); }
+    });
+    return;
+  }
   if (action === 'ranks') { showRanks = !showRanks; render(); return; }
   if (action === 'ended' && !confirm('結束後無法恢復作答，確定結束活動？')) return;
   const durationMinutes = Number(appRoot.querySelector<HTMLInputElement>('#duration')?.value);
   const questionId = target.closest('[data-question]')?.getAttribute('data-question');
   // Capture the displayed answer before a snapshot can change UI state.
   const selectedChoice = selected;
-  busy = true; message = ''; render();
+  busy = true; busyAction = action; message = ''; render();
   void (async () => {
     try {
       if (action === 'login') await signInWithPopup(runtime.auth, new GoogleAuthProvider());
@@ -263,7 +318,7 @@ appRoot.addEventListener('click', e => {
       }
     } catch (e) { message = cloudError(e); }
     finally {
-      busy = false; render();
+      busy = false; busyAction = ''; render();
       if (action === 'next') { const heading = appRoot.querySelector<HTMLElement>('.question h2,.result h2'); if (heading) { heading.tabIndex = -1; heading.focus(); } }
     }
   })();

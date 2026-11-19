@@ -14,6 +14,22 @@ export interface Room extends Timer {
 }
 const prefix = "literature-quest.v2.";
 export const demoCode = "DEMO01";
+const retiredPrefix = "literature-quest.retired.";
+export function isRetired(code: string): boolean {
+  return localStorage.getItem(retiredPrefix + code) !== null;
+}
+export async function deleteRoom(code: string): Promise<void> {
+  if (!navigator.locks) throw new Error("請使用 localhost 或 HTTPS 開啟本機示範。");
+  await navigator.locks.request(prefix + code, () => {
+    const room = readRoom(code);
+    if (room?.status === "running" || room?.status === "paused") throw new Error("請先結束活動再刪除房間。");
+    // Persist the barrier first. A partial storage failure can safely be retried.
+    localStorage.setItem(retiredPrefix + code, "deleted");
+    localStorage.removeItem(prefix + code);
+    localStorage.removeItem("quest.identity." + code);
+    sessionStorage.removeItem("quest.tab." + code);
+  });
+}
 export function readRoom(code: string): Room | null {
   const raw = localStorage.getItem(prefix + code);
   if (raw === null) return null;
@@ -31,6 +47,7 @@ export async function update<T>(
       "請使用 localhost 或 HTTPS 開啟本機示範，以便安全保存進度。",
     );
   return navigator.locks.request(prefix + code, () => {
+    if (isRetired(code)) throw new Error("房間已刪除，請向老師索取新房間碼。");
     const current = readRoom(code);
     if (!current && !create)
       throw new Error("本機房間不存在，請返回學生入口。");
@@ -54,6 +71,7 @@ export async function update<T>(
   });
 }
 export async function join(code: string, nickname: string) {
+  if (isRetired(code)) throw new Error("房間已刪除，請向老師索取新房間碼。");
   if (!readRoom(code) && code !== demoCode)
     throw new Error("找不到此本機房間，請核對六位房間碼。");
   if ([...nickname].length < 2 || [...nickname].length > 12)

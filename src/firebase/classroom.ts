@@ -1,3 +1,4 @@
+import { beginRoomDeletion, deleteRoomData } from './deletion';
 import { FirebaseError } from 'firebase/app';
 import type { User } from 'firebase/auth';
 import {
@@ -40,6 +41,20 @@ export class Classroom {
       throw error;
     }
   }
+  async isRoomRetired(roomId: string, code: string): Promise<boolean> {
+    const record = (await getDocFromServer(doc(this.db, 'retiredRoomCodes', code))).data();
+    return record?.roomId === roomId && (record.state === 'deleting' || record.state === 'completed');
+  }
+  async beginDeletion(roomId: string, code: string): Promise<void> {
+    online();
+    if (!await this.isTeacher()) throw new Error('帳號尚未獲得老師授權。');
+    await beginRoomDeletion(this.db, this.uid, roomId, code);
+  }
+  async deleteRoom(roomId: string, code: string): Promise<void> {
+    online();
+    if (!await this.isTeacher()) throw new Error('帳號尚未獲得老師授權。');
+    await deleteRoomData(this.db, this.uid, roomId, code);
+  }
   async createRoom(durationMinutes = 20): Promise<CloudRoom> {
     this.validDuration(durationMinutes);
     online();
@@ -50,7 +65,8 @@ export class Classroom {
       const code = [...bytes].map(n => alphabet[n % alphabet.length]).join('');
       const reference = doc(collection(this.db, 'rooms'));
       const room: CloudRoom = { id: reference.id, code, ownerUid: this.uid, status: 'lobby', questionSetVersion, rulesVersion: 2, durationMinutes, remainingMs: durationMinutes * 60000, runningSince: null, playerCount: 0 };
-      if ((await getDocFromServer(doc(this.db, 'roomCodes', code))).exists()) continue;
+      if ((await getDocFromServer(doc(this.db, 'roomCodes', code))).exists()
+        || (await getDocFromServer(doc(this.db, 'retiredRoomCodes', code))).exists()) continue;
       const batch = writeBatch(this.db);
       batch.set(reference, { code, ownerUid: this.uid, status: 'lobby', questionSetVersion,
         createdAt: serverTimestamp(), updatedAt: serverTimestamp(), startedAt: null, endedAt: null, rulesVersion: 2, durationMinutes, remainingMs: durationMinutes * 60000, runningSince: null, pausedAt: null, playerCount: 0 });
@@ -58,7 +74,8 @@ export class Classroom {
       try { await batch.commit(); return room; }
       catch (error) {
         if (!(error instanceof FirebaseError) || error.code !== 'permission-denied'
-          || !(await getDocFromServer(doc(this.db, 'roomCodes', code))).exists()) throw error;
+          || (!(await getDocFromServer(doc(this.db, 'roomCodes', code))).exists()
+            && !(await getDocFromServer(doc(this.db, 'retiredRoomCodes', code))).exists())) throw error;
       }
     }
     throw new Error('暫時無法產生房間碼，請重試。');
@@ -115,7 +132,7 @@ export class Classroom {
     return { room: parseRoom(roomId, room.data()), player: await this.readPlayer(roomId, player.data()) };
   }
   private modernRoom(room: CloudRoom) {
-    if (room.rulesVersion !== 2) throw new Error('這是舊規則教室，僅供回顧；請老師建立新教室。');
+    if (room.rulesVersion !== 2) throw new Error('這是舊規則房間，僅供回顧；請老師建立新房間。');
   }
   private validDuration(minutes: number) {
     if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60) throw new Error('請輸入 1 至 60 的整數分鐘。');
@@ -139,7 +156,7 @@ export class Classroom {
       transaction.update(reference, { durationMinutes: minutes, remainingMs: minutes * 60_000, updatedAt: serverTimestamp() });
     });
   }
-  async setStatus(roomId: string, next: RoomStatus) {
+  async setStatus(roomId: string, next: Exclude<RoomStatus, 'deleting'>) {
     online();
     const reference = doc(this.db, 'rooms', roomId);
     await runTransaction(this.db, async transaction => {
@@ -291,6 +308,7 @@ export class Classroom {
         transaction.get(doc(this.db, 'rooms', roomId)), transaction.get(firstRef), transaction.get(secondRef),
       ]);
       const status = parseRoom(roomId, roomDoc.data()).status;
+      if (status === 'deleting') return false;
       if (mode === 'final' && status !== 'ended' && status !== 'archived') throw new Error('活動結束後才能發布最終排名。');
       if (first.exists() && second.exists()) {
         const buffer = new LeaderboardBuffer();
@@ -314,16 +332,21 @@ export class Classroom {
       next(snapshot.data()?.authorized === true);
     }, error);
   }
-  watchRooms(next: (rooms: CloudRoom[]) => void, error: (e: unknown) => void) {
+  watchRooms(next: (rooms: CloudRoom[], unreadable: number) => void, error: (e: unknown) => void) {
     return onSnapshot(query(collection(this.db, 'rooms'), where('ownerUid', '==', this.uid)), { includeMetadataChanges: true }, s => {
       if (s.metadata.fromCache || s.metadata.hasPendingWrites) return;
-      try { next(s.docs.map(d => parseRoom(d.id, d.data()))); } catch (e) { error(e); }
+      const rooms: CloudRoom[] = [];
+      let unreadable = 0;
+      for (const document of s.docs) {
+        try { rooms.push(parseRoom(document.id, document.data())); } catch { unreadable++; }
+      }
+      next(rooms, unreadable);
     }, error);
   }
-  watchRoom(roomId: string, next: (room: CloudRoom) => void, error: (e: unknown) => void) {
+  watchRoom(roomId: string, next: (room: CloudRoom | null) => void, error: (e: unknown) => void) {
     return onSnapshot(doc(this.db, 'rooms', roomId), { includeMetadataChanges: true }, s => {
       if (s.metadata.fromCache || s.metadata.hasPendingWrites) return;
-      try { next(parseRoom(s.id, s.data())); } catch (e) { error(e); }
+      try { next(s.exists() ? parseRoom(s.id, s.data()) : null); } catch (e) { error(e); }
     }, error);
   }
   watchScores(roomId: string, next: (scores: PublicScore[]) => void, error: (e: unknown) => void) {

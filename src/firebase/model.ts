@@ -3,7 +3,7 @@ import { questions, sections } from '../questions/bank';
 import type { Answer } from '../game/session';
 import type { Chest, ChestOutcome, Timer } from '../game/rewards';
 
-export type RoomStatus = 'lobby' | 'running' | 'paused' | 'ended' | 'archived';
+export type RoomStatus = 'lobby' | 'running' | 'paused' | 'ended' | 'archived' | 'deleting';
 export const questionSetVersion = 'chinese-grade9-v1';
 export interface CloudRoom extends Timer {
   id: string; code: string; ownerUid: string; status: RoomStatus; questionSetVersion: string;
@@ -35,6 +35,10 @@ function elapsedMillis(start: unknown, end: unknown): number {
   return Math.floor((end.seconds - start.seconds) * 1000 + (end.nanoseconds - start.nanoseconds) / 1_000_000);
 }
 export function parseRoom(id: string, value: unknown): CloudRoom {
+  if (object(value) && value.status === 'deleting' && typeof value.code === 'string' && /^[A-Z0-9]{6}$/.test(value.code) && typeof value.ownerUid === 'string') {
+    if (value.rulesVersion !== undefined && value.rulesVersion !== 2) return bad();
+    return { id, code: value.code, ownerUid: value.ownerUid, status: 'deleting', questionSetVersion: typeof value.questionSetVersion === 'string' ? value.questionSetVersion : '', rulesVersion: value.rulesVersion === 2 ? 2 : 1, durationMinutes: 0, remainingMs: 0, runningSince: null, playerCount: 0 };
+  }
   if (!object(value) || typeof value.code !== 'string' || !/^[A-Z0-9]{6}$/.test(value.code)
     || typeof value.ownerUid !== 'string' || value.questionSetVersion !== questionSetVersion) return bad();
   const status = value.status;
