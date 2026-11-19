@@ -1,3 +1,4 @@
+import { chestStatus, clearAttackNotice, isChestAction, notifyAttack, renderStudentMarkup, targetLabel } from './chest-feedback';
 import { roomLabels, canDelete, controlButton, deletionSection, confirmRoomDeletion, preserveDetails, runningHint } from './room-controls';
 import "./style.css";
 import "./rewards.css";
@@ -56,6 +57,23 @@ let busy = false;
 const symbols = ["mountain", "bowl", "tree", "scroll"];
 const statusLabels = roomLabels;
 let busyAction = "";
+let chestError: { questionId: string; message: string } | null = null;
+let observedAttacks: { room: string; player: string; seen: Set<string> } | null = null;
+
+function observeAttacks(room: Room, player: Player) {
+  const seen = new Set<string>();
+  const previous = observedAttacks?.room === room.code && observedAttacks.player === player.id ? observedAttacks.seen : null;
+  for (const peer of room.players) {
+    if (peer.id === player.id) continue;
+    for (const [id, answer] of Object.entries(peer.answers)) {
+      if (!answer.chest?.settled || answer.chest.targetId !== player.id) continue;
+      const key = JSON.stringify([peer.id, id]);
+      seen.add(key);
+      if (previous && !previous.has(key)) notifyAttack(peer.nickname);
+    }
+  }
+  observedAttacks = { room: room.code, player: player.id, seen };
+}
 let durationDraft: string | null = null;
 const html = (value: string) =>
   value.replace(
@@ -156,12 +174,16 @@ function pausedReview(p: Player) {
 }
 function chestPanel(room: Room, p: Player, id: string) {
   const chest = p.answers[id]?.chest;
-  if (!chest) return `<div class="chest-grid" aria-label="選擇命運寶箱">${[0, 1, 2].map((box) => `<button type="button" class="chest-box" data-action="open-${box}"><span class="chest-pixel" aria-hidden="true"></span>寶箱 ${box + 1}</button>`).join("")}</div>`;
+  const processing = busy && isChestAction(busyAction);
+  const status = chestStatus(processing ? busyAction.startsWith('open-') ? '開啟中…' : '結算中…' : chestError?.questionId === id ? html(chestError.message) : '');
+  const rewardButton = (action: string, label: string, kind = 'primary') =>
+    `<button type="button" class="${kind}" data-action="${action}" ${processing && busyAction === action ? 'data-chest-selected' : ''} ${busy ? 'disabled' : ''}>${label}</button>`;
+  if (!chest) return `<div class="chest-grid" aria-label="選擇命運寶箱">${[0, 1, 2].map((box) => rewardButton('open-' + box, `<span class="chest-pixel" aria-hidden="true"></span>寶箱 ${box + 1}`, 'chest-box')).join("")}</div>${status}`;
   const outcome = chest.outcome;
   const label = outcome.kind === "gain" ? `獲得 ${outcome.amount} 分` : outcome.kind === "loss" ? `扣除 ${outcome.amount} 分（最低 0 分）` : outcome.kind === "steal" ? "偷取一位同學最多 100 分" : "和一位同學交換分數";
   const peers = room.players.filter((other) => other.id !== p.id);
   const needsTarget = outcome.kind === "steal" || outcome.kind === "swap";
-  return `<div class="chest-result" role="status"><strong>寶箱 ${chest.box + 1}：${label}</strong>${chest.settled ? `<p>${chest.fallback ? "目前沒有其他玩家，改獲得 20 分。" : "已結算"} 本次 ${chest.delta >= 0 ? "+" : ""}${chest.delta} 分</p>` : needsTarget && peers.length ? `<p>選擇對象，確認後立即結算。</p><div class="target-list">${peers.map((other) => button("target-" + other.id, `${html(other.nickname)} · ${score(other)} 分`, "secondary")).join("")}</div>` : `<p>${needsTarget ? "目前只有你一人，改獲得 20 分。" : "確認後結算本次分數。"}</p>${button("claim", "確認領取")}`}</div>${chest.settled ? button("next", p.cursor === 39 ? "查看結算 →" : "下一題 →") : ""}`;
+  return `<div class="chest-result"><strong>寶箱 ${chest.box + 1}：${label}</strong>${chest.settled ? `<p role="status">${chest.fallback ? "目前沒有其他玩家，改獲得 20 分。" : "已結算"} 本次 ${chest.delta >= 0 ? "+" : ""}${chest.delta} 分</p>` : needsTarget && peers.length ? `<p>選擇對象，確認後立即結算。</p><div class="target-list">${peers.map((other) => rewardButton("target-" + other.id, targetLabel(html(other.nickname), score(other)), "secondary")).join("")}</div>` : `<p>${needsTarget ? "目前只有你一人，改獲得 20 分。" : "確認後結算本次分數。"}</p>${rewardButton("claim", "確認領取")}`}</div>${status}${chest.settled ? button("next", p.cursor === 39 ? "查看結算 →" : "下一題 →") : ""}`;
 }
 function studentPage(room: Room, p: Player) {
   const done = Object.keys(p.answers).length;
@@ -175,7 +197,7 @@ function studentPage(room: Room, p: Player) {
       a = p.answers[id];
     content = `<section class="panel question" data-question="${html(id)}"><p class="eyebrow">第 ${p.cursor + 1} / 40 題　·　${html(q.sectionId)}</p><h2>${html(q.stem)}</h2><div class="choices" role="radiogroup" aria-label="答案選項">${p.choices[id]!.map((original, i) => `<button type="button" class="choice ${a ? (original === q.correctChoiceIndex ? "right" : a.selected === i ? "wrong" : "") : selected === i ? "chosen" : ""}" role="radio" data-choice="${i}" aria-checked="${a ? a.selected === i : selected === i}" tabindex="${i === Math.max(0, selected) ? 0 : -1}" ${a ? "disabled" : ""}><b>${"ABCD"[i]}</b>${html(q.choices[original]!)}${a && original === q.correctChoiceIndex ? " ✓" : a?.selected === i ? " ×" : ""}</button>`).join("")}</div>${a ? `<div class="feedback"><strong>${a.correct ? "答對了！選一個命運寶箱" : "這題答錯了"}</strong><details ${a.viewed ? "open" : ""}><summary>閱讀詳解（不加分）</summary><p>${html(q.explanation)}</p></details></div>${a.correct ? chestPanel(room, p, id) : p.cooldownUntil !== null && Date.now() < p.cooldownUntil ? `<p class="freeze" role="status">暫停 ${Math.ceil((p.cooldownUntil - Date.now()) / 1000)} 秒，看看詳解再出發。</p>` : button("next", p.cursor === 39 ? "查看結算 →" : "下一題 →")}` : '<button type="button" class="primary" data-action="answer" ' + (selected < 0 ? "disabled" : "") + ">送出答案 →</button>"}</section>`;
   }
-  return `<div class="section-head"><div><p class="eyebrow">房間 ${room.code}　／　${html(p.nickname)}</p><h1>我的冒險手冊</h1></div>${button("ranks", showRanks ? "收起排名" : "全班排名", "secondary")}</div>${timer(room)}<div class="progress"><span style="width:${(done / 40) * 100}%"></span></div><p class="progress-label">已完成 ${done} / 40 題 <b>${score(p)} 分</b></p>${showRanks ? ranks(room) : ""}${content}`;
+  return `<div class="section-head"><div><p class="eyebrow">房間 ${room.code}　／　${html(p.nickname)}</p><h1>我的冒險手冊</h1></div>${button("ranks", showRanks ? "收起排名" : "全班排名", "secondary")}</div>${timer(room)}<div class="progress"><span style="width:${(done / 40) * 100}%"></span></div><p class="progress-label">已完成 ${done} / 40 題 <b>${score(p)} 分</b></p><div>${showRanks ? ranks(room) : ""}</div>${content}`;
 }
 function render() {
   const restoreDetails = preserveDetails(root);
@@ -185,6 +207,7 @@ function render() {
   try {
     const deletion = getDeletionState(code);
     if (deletion) {
+      clearAttackNotice(); observedAttacks = null;
       activeId = ''; sessionStorage.removeItem('quest.tab.' + code);
       const complete = deletion === 'completed';
       const status = complete ? `房間 ${html(code)} 無法繼續使用，請向老師索取新房間碼。` : teacher ? '房間已停止活動，部分清理尚未完成。請繼續刪除剩餘紀錄。' : '房間正在刪除，無法繼續活動。';
@@ -204,7 +227,9 @@ function render() {
       entries: [],
       updated: 0,
     };
-    root.innerHTML = `<header><div class="bar"><a class="brand" href="${html(url("student"))}">${icon("book")} 國文段考生存戰</a><nav aria-label="主要導覽"><a class="${!teacher ? "active" : ""}" href="${html(url("student"))}">學生入口</a><a class="${teacher ? "active" : ""}" href="${html(url("teacher"))}">老師控制台</a></nav></div></header><main><div class="crumb">房間大廳 <span>/</span> ${teacher ? "老師控制台" : player ? "冒險手冊" : "學生入口"}<strong><i></i> 本機示範</strong></div>${teacher ? teacherPage(displayed) : room && player ? studentPage(room, player) : joinPage()}${(teacher || player) && message ? '<p class="error" role="alert">' + html(message) + "</p>" : ""}</main><footer><span>${icon("book")} 國三國文・課堂練習</span><span>進度儲存在此瀏覽器</span></footer>`;
+    const markup = `<header><div class="bar"><a class="brand" href="${html(url("student"))}">${icon("book")} 國文段考生存戰</a><nav aria-label="主要導覽"><a class="${!teacher ? "active" : ""}" href="${html(url("student"))}">學生入口</a><a class="${teacher ? "active" : ""}" href="${html(url("teacher"))}">老師控制台</a></nav></div></header><main><div class="crumb">房間大廳 <span>/</span> ${teacher ? "老師控制台" : player ? "冒險手冊" : "學生入口"}<strong><i></i> 本機示範</strong></div>${teacher ? teacherPage(displayed) : room && player ? studentPage(room, player) : joinPage()}${(teacher || player) && message ? '<p class="error" role="alert">' + html(message) + "</p>" : ""}</main><footer><span>${icon("book")} 國三國文・課堂練習</span><span>進度儲存在此瀏覽器</span></footer>`;
+    if (teacher) root.innerHTML = markup; else renderStudentMarkup(root, markup);
+    if (!teacher && room && player) observeAttacks(room, player);
     restoreDetails();
     if (displayed.status !== 'lobby') durationDraft = null;
     const duration = root.querySelector<HTMLInputElement>('#duration');
@@ -306,6 +331,9 @@ root.addEventListener("click", async (e) => {
   }
   if (action === "end" && !confirm("結束後無法恢復作答。確定結束本機活動？"))
     return;
+  const chestAction = !teacher && isChestAction(action);
+  if (chestAction) chestError = null;
+  const chestHadFocus = chestAction && document.activeElement === b;
   busy = true; busyAction = action;
   const requestedMinutes = Number(root.querySelector<HTMLInputElement>('#duration')?.value);
   render();
@@ -352,10 +380,15 @@ root.addEventListener("click", async (e) => {
     selected = -1;
     message = "";
   } catch (error) {
-    message = error instanceof Error ? error.message : "無法儲存，請重試。";
+    const failure = error instanceof Error ? error.message : "無法儲存，請重試。";
+    if (chestAction && expectedId) chestError = { questionId: expectedId, message: failure };
+    else message = failure;
   } finally {
     busy = false; busyAction = "";
     render();
+    if (chestHadFocus && document.activeElement === document.body) {
+      root.querySelector<HTMLElement>('.question .chest-grid button:not(:disabled), .question .chest-result button:not(:disabled), .question [data-action=next]:not(:disabled)')?.focus({ preventScroll: true });
+    }
     if (action === "next") {
       const heading = root.querySelector<HTMLElement>(
         ".question h2,.result h2",
@@ -370,7 +403,7 @@ root.addEventListener("click", async (e) => {
 });
 window.addEventListener("storage", (e) => {
   if (!e.key?.endsWith(code) || (!teacher && !activeId)) return;
-  if (!busy) {
+  if (!busy || (!teacher && isChestAction(busyAction))) {
     const visible =
       root.querySelector<HTMLElement>("[data-question]")?.dataset.question;
     try {
@@ -383,18 +416,19 @@ window.addEventListener("storage", (e) => {
   }
 });
 window.setInterval(async () => {
-  if (busy) return;
+  if (busy && (teacher || !isChestAction(busyAction))) return;
   try {
     if (isRetired(code)) { if (activeId || root.querySelector('[data-deletion-state]')?.getAttribute('data-deletion-state') !== getDeletionState(code)) render(); return; }
     const before = readRoom(code);
     if (!before || (!teacher && before.status !== "running")) return;
-    await update(code, (current) => { if (teacher) publish(current); });
-    const room = readRoom(code);
+    if (!busy) await update(code, (current) => { if (teacher) publish(current); });
+    const room = busy ? before : readRoom(code);
     if (!room) return;
     const p = room.players.find((player) => player.id === activeId);
     const freeze = root.querySelector<HTMLElement>(".freeze");
     const finished = p?.finishedAt !== null && p?.finishedAt !== undefined && p.finishedAt <= Date.now();
-    if (room.status !== before.status || (freeze && p?.cooldownUntil !== null && p?.cooldownUntil !== undefined && p.cooldownUntil <= Date.now()) || (finished && !root.querySelector(".result"))) {
+    const expiredWhileWaiting = busy && remainingTime(room) <= 0 && !root.querySelector('.result');
+    if (expiredWhileWaiting || room.status !== before.status || (freeze && p?.cooldownUntil !== null && p?.cooldownUntil !== undefined && p.cooldownUntil <= Date.now()) || (finished && !root.querySelector(".result"))) {
       render();
       return;
     }

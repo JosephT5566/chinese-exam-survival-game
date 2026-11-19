@@ -2,7 +2,7 @@ import { beginRoomDeletion, deleteRoomData } from './deletion';
 import { FirebaseError } from 'firebase/app';
 import type { User } from 'firebase/auth';
 import {
-  collection, doc, getDocFromServer, getDocsFromServer, onSnapshot, query, where,
+  collection, doc, getDocFromServer, getDocsFromServer, onSnapshot, onSnapshotsInSync, query, where,
   runTransaction, serverTimestamp, writeBatch, type Firestore,
 } from 'firebase/firestore';
 import { newPlayer } from '../game/session';
@@ -208,6 +208,10 @@ export class Classroom {
       throw error;
     });
   }
+  async readSavedChest(roomId: string, questionId: string) {
+    const answer = await getDocFromServer(doc(this.db, 'rooms', roomId, 'players', this.uid, 'answers', questionId));
+    return answer.exists() ? parseAnswer(answer.data()).chest : null;
+  }
   async openChest(roomId: string, questionId: string, box: number) {
     online();
     if (!Number.isInteger(box) || box < 0 || box > 2) throw new Error('請選擇三個寶箱之一。');
@@ -371,9 +375,10 @@ export class Classroom {
     const stopScores = this.watchScores(roomId, value => { scores = value; emit(); }, error);
     return () => { stopPlayers(); stopScores(); };
   }
-  watchProgress(roomId: string, next: (player: CloudPlayer, answers: Record<string, CloudAnswer>) => void, error: (e: unknown) => void) {
+  watchProgress(roomId: string, next: (player: CloudPlayer, answers: Record<string, CloudAnswer>) => void, error: (e: unknown) => void, reconnect?: () => void) {
     const reference = doc(this.db, 'rooms', roomId, 'players', this.uid);
     let raw: unknown = null, answers: Record<string, CloudAnswer> | null = null, score: PublicScore | undefined;
+    let changed = false, scoreFromCache = false, scoreReconnected = false;
     const emit = () => {
       if (!raw || !answers) return;
       try {
@@ -385,19 +390,27 @@ export class Classroom {
         next(p, answers);
       } catch (e) { error(e); }
     };
+    // A claim updates these documents together. Wait for all affected listeners,
+    // and keep ignoring cache reads and local writes in the callbacks below.
+    const stopSync = onSnapshotsInSync(this.db, () => {
+      if (changed) { changed = false; emit(); }
+      if (scoreReconnected) { scoreReconnected = false; reconnect?.(); }
+    });
     const stopPlayer = onSnapshot(reference, { includeMetadataChanges: true }, s => {
       if (s.metadata.fromCache || s.metadata.hasPendingWrites) return;
-      raw = s.data(); emit();
+      raw = s.data(); changed = true;
     }, error);
     const stopAnswers = onSnapshot(collection(reference, 'answers'), { includeMetadataChanges: true }, s => {
       if (s.metadata.fromCache || s.metadata.hasPendingWrites) return;
-      try { answers = Object.fromEntries(s.docs.map(d => [d.id, parseAnswer(d.data())])); emit(); } catch (e) { error(e); }
+      try { answers = Object.fromEntries(s.docs.map(d => [d.id, parseAnswer(d.data())])); changed = true; } catch (e) { error(e); }
     }, error);
     const stopScore = onSnapshot(doc(this.db, 'rooms', roomId, 'scores', this.uid), { includeMetadataChanges: true }, s => {
-      if (s.metadata.fromCache || s.metadata.hasPendingWrites) return;
-      try { if (s.exists()) score = parseScore(this.uid, s.data()); emit(); } catch (e) { error(e); }
+      if (s.metadata.hasPendingWrites) return;
+      if (s.metadata.fromCache) { scoreFromCache = true; return; }
+      if (scoreFromCache) { scoreFromCache = false; scoreReconnected = true; }
+      try { if (s.exists()) { score = parseScore(this.uid, s.data()); changed = true; } } catch (e) { error(e); }
     }, error);
-    return () => { stopPlayer(); stopAnswers(); stopScore(); };
+    return () => { stopPlayer(); stopAnswers(); stopScore(); stopSync(); };
   }
   watchLeaderboard(roomId: string, next: (leaderboard: Leaderboard) => void, error: (e: unknown) => void) {
     const buffer = new LeaderboardBuffer();
