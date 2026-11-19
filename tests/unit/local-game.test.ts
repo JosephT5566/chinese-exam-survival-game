@@ -121,3 +121,37 @@ it('a partial storage failure keeps the retirement barrier and permits cleanup r
   fail = false; await deleteRoom('DEMO01');
   expect(data.has('quest.identity.DEMO01')).toBe(false);
 });
+
+it('a demo tombstone records completion only after every cleanup step succeeds', async () => {
+  const data = new Map<string, string>();
+  let failFinalMarker = true;
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      if (failFinalMarker && value === 'completed') throw new Error('marker failure');
+      data.set(key, value);
+    },
+    removeItem: (key: string) => data.delete(key),
+  });
+  vi.stubGlobal('sessionStorage', { removeItem: () => {} });
+  vi.stubGlobal('navigator', { locks: { request: async (_key: string, run: () => unknown) => run() } });
+  const { deleteRoom, getDeletionState } = await import('../../src/game/local');
+  await update('DEMO01', () => {}, true);
+  await expect(deleteRoom('DEMO01')).rejects.toThrow('marker failure');
+  expect(getDeletionState('DEMO01')).toBe('deleting');
+  failFinalMarker = false;
+  await deleteRoom('DEMO01');
+  expect(getDeletionState('DEMO01')).toBe('completed');
+});
+
+it('classifies old demo retirement markers by the remaining room and identity keys', async () => {
+  const data = new Map<string, string>([['literature-quest.retired.DEMO01', 'deleted'], ['quest.identity.DEMO01', 'student']]);
+  vi.stubGlobal('localStorage', { getItem: (key: string) => data.get(key) ?? null });
+  const { getDeletionState } = await import('../../src/game/local');
+  expect(getDeletionState('DEMO01')).toBe('deleting');
+  data.delete('quest.identity.DEMO01');
+  expect(getDeletionState('DEMO01')).toBe('completed');
+  data.set('literature-quest.v2.DEMO01', 'incomplete-save');
+  expect(getDeletionState('DEMO01')).toBe('deleting');
+  expect(getDeletionState('OTHER1')).toBeNull();
+});

@@ -48,4 +48,4 @@ Spark MVP 的用戶端分數與隨機結果可被竄改，隨瀏覽器發送的�
 
 老師手動刪除資料，建議 30 天內清理。`src/firebase/deletion.ts` 以 deleting 狀態凍結遊戲，分頁清理已知子集合後才刪 room，並以永久 `retiredRoomCodes` 紀錄支援重試及防止舊碼重用。規則不證明任意子集合已空，既存未知孤兒須由管理員處理。契約見 [Firestore contract](firestore-contract.md#可重試的房間刪除)。
 
-`src/app/room-controls.ts` 共用老師端狀態、刪除區及原生確認對話框；對話框位於視圖容器之外，避免訂閱重繪清除輸入。刪除中停止房間相關訂閱與 publisher，保留授權及房間清單訂閱。Demo 沿用每房間 Web Lock，先寫 tombstone 再清存檔與身分鍵，阻止包括 DEMO01 在內的舊操作重建資料。
+`src/app/room-controls.ts` 共用老師端狀態、刪除區及原生確認對話框；對話框位於視圖容器之外，避免訂閱重繪清除輸入。刪除中停止房間相關訂閱與 publisher，保留授權及房間清單訂閱。Demo 沿用每房間 Web Lock，先寫 tombstone 再清存檔與身分鍵，阻止包括 DEMO01 在內的舊操作重建資料。標記先保存 deleting，房間、共用身分索引與目前分頁身分清理成功後才寫 completed；舊版 deleted 標記依剩餘房間／共用身分鍵判定待清理或完成。

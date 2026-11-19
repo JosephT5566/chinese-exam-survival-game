@@ -8,6 +8,7 @@ import { answer, explain, score, openChest, claimChest, nextQuestion, type Playe
 import {
   deleteRoom,
   isRetired,
+  getDeletionState,
   setDuration,
   setStatus,
   demoCode,
@@ -55,6 +56,7 @@ let busy = false;
 const symbols = ["mountain", "bowl", "tree", "scroll"];
 const statusLabels = roomLabels;
 let busyAction = "";
+let durationDraft: string | null = null;
 const html = (value: string) =>
   value.replace(
     /[&<>"']/g,
@@ -178,11 +180,15 @@ function studentPage(room: Room, p: Player) {
 function render() {
   const restoreDetails = preserveDetails(root);
   const focused = document.activeElement;
+  const focusedDuration = focused instanceof HTMLInputElement && focused.id === "duration";
   const focusedAction = focused instanceof HTMLElement ? focused.dataset.action : undefined;
   try {
-    if (isRetired(code)) {
+    const deletion = getDeletionState(code);
+    if (deletion) {
       activeId = ''; sessionStorage.removeItem('quest.tab.' + code);
-      root.innerHTML = `<main><section class="panel"><h1 tabindex="-1">房間已刪除</h1><p role="status">房間 ${html(code)} 無法繼續使用，請向老師索取新房間碼。</p>${teacher ? button('new', '建立新示範房間') : `<a class="secondary" href="?demo=1">返回學生入口</a>`}${teacher && (readRoom(code) || message || localStorage.getItem('quest.identity.' + code)) ? button('retry-delete', '繼續刪除', 'danger') : ''}</section>${message ? `<p role="alert">${html(message)}</p>` : ''}</main>`;
+      const complete = deletion === 'completed';
+      const status = complete ? `房間 ${html(code)} 無法繼續使用，請向老師索取新房間碼。` : teacher ? '房間已停止活動，部分清理尚未完成。請繼續刪除剩餘紀錄。' : '房間正在刪除，無法繼續活動。';
+      root.innerHTML = `<main data-deletion-state="${deletion}"><section class="panel"><h1 tabindex="-1">${complete ? '房間已刪除' : '房間刪除尚未完成'}</h1><p role="status">${status}</p>${teacher ? complete ? button('new', '建立新示範房間') : button('retry-delete', '繼續刪除', 'danger') : `<a class="secondary" href="?demo=1">返回學生入口</a>`}</section>${message ? `<p role="alert">${html(message)}</p>` : ''}</main>`;
       return;
     }
     const room = readRoom(code);
@@ -200,6 +206,10 @@ function render() {
     };
     root.innerHTML = `<header><div class="bar"><a class="brand" href="${html(url("student"))}">${icon("book")} 國文段考生存戰</a><nav aria-label="主要導覽"><a class="${!teacher ? "active" : ""}" href="${html(url("student"))}">學生入口</a><a class="${teacher ? "active" : ""}" href="${html(url("teacher"))}">老師控制台</a></nav></div></header><main><div class="crumb">房間大廳 <span>/</span> ${teacher ? "老師控制台" : player ? "冒險手冊" : "學生入口"}<strong><i></i> 本機示範</strong></div>${teacher ? teacherPage(displayed) : room && player ? studentPage(room, player) : joinPage()}${(teacher || player) && message ? '<p class="error" role="alert">' + html(message) + "</p>" : ""}</main><footer><span>${icon("book")} 國三國文・課堂練習</span><span>進度儲存在此瀏覽器</span></footer>`;
     restoreDetails();
+    if (displayed.status !== 'lobby') durationDraft = null;
+    const duration = root.querySelector<HTMLInputElement>('#duration');
+    if (duration && durationDraft !== null) duration.value = durationDraft;
+    if (focusedDuration && duration && !duration.disabled && !document.querySelector('dialog[open]')) duration.focus({ preventScroll: true });
     if (!document.querySelector('dialog[open]') && focusedAction) (root.querySelector<HTMLElement>(`[data-action="${focusedAction}"]:not(:disabled)`) ?? root.querySelector<HTMLElement>('.room-core [data-action]:not(:disabled),.room-core h2'))?.focus({ preventScroll: true });
     const canvas = root.querySelector("canvas");
     if (canvas) paintLandscape(canvas);
@@ -210,6 +220,9 @@ function render() {
       "</section></main>";
   }
 }
+root.addEventListener('input', event => {
+  if (teacher && event.target instanceof HTMLInputElement && event.target.id === 'duration') durationDraft = event.target.value;
+});
 root.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (busy || !(e.target instanceof HTMLFormElement)) return;
@@ -335,6 +348,7 @@ root.addEventListener("click", async (e) => {
       },
       teacher && code === demoCode,
     );
+    if (action === "duration") durationDraft = null;
     selected = -1;
     message = "";
   } catch (error) {
@@ -371,7 +385,7 @@ window.addEventListener("storage", (e) => {
 window.setInterval(async () => {
   if (busy) return;
   try {
-    if (isRetired(code)) { if (activeId || !root.querySelector('h1')?.textContent?.includes('房間已刪除')) render(); return; }
+    if (isRetired(code)) { if (activeId || root.querySelector('[data-deletion-state]')?.getAttribute('data-deletion-state') !== getDeletionState(code)) render(); return; }
     const before = readRoom(code);
     if (!before || (!teacher && before.status !== "running")) return;
     await update(code, (current) => { if (teacher) publish(current); });

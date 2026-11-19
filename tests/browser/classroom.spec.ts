@@ -244,3 +244,60 @@ test('demo teacher focuses active controls and permanently deletes with typed co
   await expect(teacher).not.toHaveURL(/room=DEMO01/);
   await context.close();
 });
+
+test('demo review preserves an unsaved duration and focus when a student joins', async ({ browser }) => {
+  const context = await browser.newContext();
+  const teacher = await context.newPage(), student = await context.newPage();
+  await teacher.goto('/?demo=1&view=teacher&room=DEMO01');
+  const duration = teacher.getByLabel('活動時間（1–60 分鐘）');
+  await duration.fill('37');
+  await student.goto('/?demo=1&room=DEMO01');
+  await student.getByLabel('玩家暱稱').fill('加入觸發更新');
+  await student.getByRole('button', { name: /加入教室/ }).click();
+  await expect(teacher.getByText('加入觸發更新', { exact: true })).toBeVisible();
+  await expect(duration).toHaveValue('37');
+  await expect(duration).toBeFocused();
+  await teacher.getByRole('button', { name: '設定時間', exact: true }).click();
+  await expect.poll(() => teacher.evaluate(() => localStorage.getItem('literature-quest.v2.DEMO01'))).toContain('"durationMinutes":37');
+  await teacher.reload();
+  await expect(duration).toHaveValue('37');
+  await context.close();
+});
+
+for (const target of ['literature-quest.v2.DEMO01', 'quest.identity.DEMO01']) {
+  test(`demo review keeps pending deletion after ${target} cleanup fails and reloads`, async ({ page }, testInfo) => {
+    await page.addInitScript(({ target }) => {
+      const remove = Storage.prototype.removeItem;
+      Storage.prototype.removeItem = function(key: string) {
+        if (key === target && localStorage.getItem('test.fail-delete') === '1') throw new DOMException('Test blocked cleanup', 'QuotaExceededError');
+        return remove.call(this, key);
+      };
+    }, { target });
+    await page.goto('/?demo=1&view=teacher&room=DEMO01');
+    // Use the visible settings control to create the lobby save before deletion.
+    await page.getByRole('button', { name: '設定時間', exact: true }).click();
+    await page.evaluate(() => {
+      localStorage.setItem('quest.identity.DEMO01', 'synthetic-student');
+      localStorage.setItem('test.fail-delete', '1');
+    });
+    await page.getByRole('button', { name: '刪除房間', exact: true }).click();
+    await page.getByLabel('輸入房間碼以確認').fill('DEMO01');
+    await page.getByRole('button', { name: '永久刪除', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '房間刪除尚未完成' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '房間已刪除', exact: true })).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByRole('heading', { name: '房間刪除尚未完成' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '繼續刪除', exact: true })).toBeEnabled();
+    expect(await page.evaluate(target => localStorage.getItem(target), target)).not.toBeNull();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole('heading', { name: '房間刪除尚未完成' }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath('demo-deletion-pending-mobile.png'), fullPage: false });
+    await page.evaluate(() => localStorage.removeItem('test.fail-delete'));
+    await page.getByRole('button', { name: '繼續刪除', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '房間已刪除', exact: true })).toBeVisible();
+    expect(await page.evaluate(() => ({ room: localStorage.getItem('literature-quest.v2.DEMO01'), identity: localStorage.getItem('quest.identity.DEMO01') }))).toEqual({ room: null, identity: null });
+    await page.reload();
+    await expect(page.getByRole('heading', { name: '房間已刪除', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '繼續刪除', exact: true })).toHaveCount(0);
+  });
+}

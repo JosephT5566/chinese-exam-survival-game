@@ -18,16 +18,26 @@ const retiredPrefix = "literature-quest.retired.";
 export function isRetired(code: string): boolean {
   return localStorage.getItem(retiredPrefix + code) !== null;
 }
+export function getDeletionState(code: string): 'deleting' | 'completed' | null {
+  const state = localStorage.getItem(retiredPrefix + code);
+  if (state === null) return null;
+  // Older builds wrote "deleted" before cleanup. Inspect raw keys, without
+  // parsing potentially damaged saves, rather than assuming that meant success.
+  if (state === 'deleted') return localStorage.getItem(prefix + code) === null
+    && localStorage.getItem('quest.identity.' + code) === null ? 'completed' : 'deleting';
+  return state === 'completed' ? 'completed' : 'deleting';
+}
 export async function deleteRoom(code: string): Promise<void> {
   if (!navigator.locks) throw new Error("請使用 localhost 或 HTTPS 開啟本機示範。");
   await navigator.locks.request(prefix + code, () => {
     const room = readRoom(code);
     if (room?.status === "running" || room?.status === "paused") throw new Error("請先結束活動再刪除房間。");
     // Persist the barrier first. A partial storage failure can safely be retried.
-    localStorage.setItem(retiredPrefix + code, "deleted");
+    localStorage.setItem(retiredPrefix + code, "deleting");
     localStorage.removeItem(prefix + code);
     localStorage.removeItem("quest.identity." + code);
     sessionStorage.removeItem("quest.tab." + code);
+    localStorage.setItem(retiredPrefix + code, "completed");
   });
 }
 export function readRoom(code: string): Room | null {

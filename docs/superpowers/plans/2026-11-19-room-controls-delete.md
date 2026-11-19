@@ -47,3 +47,13 @@ Final branch: `codex/issue-8-room-controls-delete`.
 - Independent review: not started, explicitly waiting for owner instruction. No deployment, production data writes, merge or live teacher authorization. Auth and rules tests use demo-chinese-exam only.
 
 Implementation decisions remain visible for owner review: option B, permanent retired codes, and normal-client cleanup of discoverable schema paths rather than a claim that rules prove zero descendants. Formal A/B selection and any broader security guarantee are not fabricated. No global room lock was added.
+
+
+## PR #11 review fixes
+
+Owner requested fixing both independent review findings. Browser regressions first reproduced duration reset from 37 to 20 after a student joined, and false completion after failures removing either the room save or shared identity key.
+
+- Persist demo tombstones as deleting before cleanup and completed only after every step succeeds. Old deleted markers are classified by remaining raw room/identity keys. Pending state and Continue survive reload; the retirement barrier remains active. Unit tests also cover failure writing the final completion marker.
+- Keep the teacher's unsaved duration draft and focused input across roster renders. Clear the draft after successful application or leaving the lobby. Browser assertions verify focus, value and persisted duration after reload.
+- Final local checks: check passed with 58 unit tests and production build; rules 79 passed; integration 16 passed; browser 8 passed with installed Chrome. Added focused browser tests went RED then GREEN. Diff whitespace check passed. Mobile pending-deletion feedback was inspected.
+- No new independent review, merge, deployment or production data mutation was performed as part of these fixes. Original review threads receive commit/test evidence for reviewer confirmation.
